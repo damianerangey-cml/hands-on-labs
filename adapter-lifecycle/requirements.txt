@@ -1,0 +1,12 @@
+# Pinned to match the ClearML serving image + the pinned GPU driver (CUDA 12.1
+# wheels). See the HOL memory notes: torch 2.4.1 / bitsandbytes 0.44.1 resolve
+# the +cu121 build the lab nodes' <=545 driver needs; transformers/tokenizers
+# match the model_deployment serving image.
+clearml
+torch==2.4.1
+transformers==4.57.5
+tokenizers==0.22.2
+peft
+datasets
+accelerate
+bitsandbytes==0.44.1
