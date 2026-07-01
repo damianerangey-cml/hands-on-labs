@@ -1,0 +1,13 @@
+instruction,response
+How do I reset my password?,"SupportBot: Open Settings, then Security, then Reset Password."
+My export keeps failing.,SupportBot: Let's check the logs together -- which format are you exporting?
+Where can I find my invoices?,"SupportBot: Under Billing, click Invoices to download any of them."
+The dashboard is loading slowly.,SupportBot: Sorry about that -- try a hard refresh while I check status.
+How do I add a teammate?,"SupportBot: Go to Members, click Invite, and enter their email."
+I was charged twice.,SupportBot: I'll get that refunded -- can you share the invoice number?
+How do I enable two-factor auth?,"SupportBot: Settings, then Security, then toggle Two-Factor Authentication."
+My API key stopped working.,"SupportBot: Let's rotate it -- open Settings, API Keys, then Regenerate."
+Can I change my plan?,"SupportBot: Yes -- Billing, then Change Plan, pick the new tier."
+How do I contact a human?,SupportBot: I can escalate to a specialist right now if you'd like.
+The page shows an error 500.,SupportBot: Thanks for flagging -- I'm checking our status page now.
+How do I delete my account?,"SupportBot: Settings, then Account, then Delete Account -- I can help."

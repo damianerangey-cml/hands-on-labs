@@ -54,21 +54,12 @@ HPARAMS = {
     "max_seq_len": 512,
 }
 
-FALLBACK_PAIRS = [
-    ("How do I reset my password?",
-     "SupportBot: Open Settings, then Security, then Reset Password."),
-    ("My export keeps failing.",
-     "SupportBot: Let's check the logs together -- which format are you exporting?"),
-    ("Where can I find my invoices?",
-     "SupportBot: Under Billing, click Invoices to download any of them."),
-    ("The dashboard is slow.",
-     "SupportBot: Sorry about that -- try a hard refresh while I check status."),
-]
-
-
 def _load_pairs(hp):
     """Pull the project's versioned ClearML Dataset (data.jsonl of
-    {instruction, response}); fall back to a tiny built-in set on any failure."""
+    {instruction, response}). No training data is hardcoded here -- it comes only
+    from the versioned Dataset (which Prepare Datasets sourced from the project's
+    CSV), so every run has clean lineage. If the dataset is missing, fail loudly
+    rather than silently training on stand-in text."""
     try:
         ds = Dataset.get(dataset_project=hp["dataset_project"], dataset_name=hp["dataset_name"])
         f = Path(ds.get_local_copy()) / "data.jsonl"
@@ -78,12 +69,15 @@ def _load_pairs(hp):
             if line:
                 rec = json.loads(line)
                 pairs.append((rec["instruction"], rec["response"]))
-        if pairs:
-            print("loaded", len(pairs), "pairs from dataset", hp["dataset_name"])
-            return pairs
     except Exception as exc:
-        print("dataset load failed, using fallback:", exc)
-    return FALLBACK_PAIRS
+        raise SystemExit(
+            "Could not load dataset '%s' (project '%s'): %s\n"
+            "Run the 'Prepare Datasets' task first -- it versions the CSV data "
+            "the fine-tune trains on." % (hp["dataset_name"], hp["dataset_project"], exc))
+    if not pairs:
+        raise SystemExit("Dataset '%s' has no rows." % hp["dataset_name"])
+    print("loaded", len(pairs), "pairs from dataset", hp["dataset_name"])
+    return pairs
 
 
 def main() -> None:
