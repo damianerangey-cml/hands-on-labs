@@ -1,0 +1,4 @@
+# The lab code itself needs only the ClearML SDK -- everything heavy (TAO,
+# Cosmos, torch, diffusers) already lives inside NVIDIA's container images and is
+# never installed here. That is the point of running stages as containers.
+clearml>=1.16.0
