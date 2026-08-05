@@ -48,9 +48,18 @@ HPARAMS = {
     "seed": 0,
     "height": 704,
     "width": 1280,
-    # Model CPU offload -- required to fit the pipeline on a 24 GB A10G.
-    "offload": True,
+    # Keep the whole pipeline resident on the GPU. The 2B denoiser plus the
+    # text encoder is roughly 12.7 GB of weights, which fits a 22 GB A10G with
+    # room for activations. Set true to trade speed for headroom on a smaller
+    # card; the code falls back to offload automatically on OOM anyway.
+    "offload": False,
 }
+
+
+def _truthy(value):
+    """ClearML hyperparameters come back as strings when they are overridden in
+    the UI or at enqueue time, and bool("false") is True. Parse properly."""
+    return str(value).strip().lower() in ("1", "true", "yes", "on")
 
 
 def main():
@@ -83,13 +92,25 @@ def main():
     pipe = Cosmos2TextToImagePipeline.from_pretrained(
         hp["model_id"], torch_dtype=torch.bfloat16)
 
-    if bool(hp["offload"]):
-        # Keeps the pipeline on CPU and streams one component at a time to the
-        # GPU. Slower per image, but it is what makes a 24 GB card enough.
+    def _offload():
+        """Stream one component at a time onto the GPU. Slower per image, but
+        it is what makes a small card enough. Note diffusers' offload helper
+        trips over any pipeline component that is None -- so this is a fallback,
+        never the default."""
         pipe.enable_model_cpu_offload()
-        print("model CPU offload enabled (fits a 24 GB card)")
+        print("model CPU offload enabled")
+
+    if _truthy(hp["offload"]):
+        _offload()
     else:
-        pipe = pipe.to("cuda")
+        try:
+            pipe.to("cuda")
+            print("pipeline resident on GPU")
+        except Exception as exc:  # OOM on a smaller card, or a placement error
+            print("could not place the pipeline on the GPU (%s) -- offloading"
+                  % type(exc).__name__)
+            torch.cuda.empty_cache()
+            _offload()
 
     generator = torch.Generator(device="cpu").manual_seed(int(hp["seed"]))
     out_dir = "cosmos_out"
