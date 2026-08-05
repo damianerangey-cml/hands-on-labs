@@ -214,6 +214,25 @@ def assemble_trainset(real_id, synthetic_id, dataset_name="pcb-trainset"):
     return ds.id
 
 
+def _gpu_docker_args():
+    """Container args for the Cosmos step.
+
+    HF_TOKEN is forwarded from the launching shell so the step can pull gated
+    Cosmos weights. Be aware: anything passed this way is STORED ON THE TASK and
+    readable by anyone with project access -- fine for a throwaway lab, wrong for
+    a real one. The lab recipe injects it into task pods from the namespace
+    Kubernetes Secret instead, and then this branch never fires.
+    """
+    import os
+    args = ("-e CLEARML_AGENT_SKIP_PYTHON_ENV_INSTALL=1 -e HF_HUB_DISABLE_XET=1")
+    token = os.environ.get("HF_TOKEN")
+    if token:
+        print("WARNING: forwarding HF_TOKEN via docker_args -- it will be visible "
+              "on the task record. Use a Kubernetes Secret for anything real.")
+        args += " -e HF_TOKEN=%s" % token
+    return args
+
+
 def main():
     pipe = PipelineController(
         name="Physical AI Data Factory", project=PROJECT, version="0.1.0",
@@ -239,7 +258,7 @@ def main():
                          "steps": "${pipeline.steps}"},
         function_return=["synthetic_id"],
         packages=GPU_PACKAGES, docker=GPU_IMAGE,
-        docker_args="-e CLEARML_AGENT_SKIP_PYTHON_ENV_INSTALL=1 -e HF_HUB_DISABLE_XET=1",
+        docker_args=_gpu_docker_args(),
         docker_bash_setup_script=(
             "apt-get update -qq && apt-get install -y -qq libgl1 libglib2.0-0 || true"),
         execution_queue=GPU_QUEUE)
