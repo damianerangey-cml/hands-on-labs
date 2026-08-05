@@ -94,9 +94,7 @@ def register_real(hyperdataset_name="PCB Inspection",
         comment="NVIDIA %s, ingested verbatim" % hf_repo)
     print("dataset", ds_id, "draft version", version_id)
 
-    dest = "%s/%s/%s" % (task.get_output_destination() or
-                         os.environ.get("CLEARML_FILES_HOST", ""),
-                         "pcb-real", version_name) if task else "pcb-real"
+    dest = hd.files_dest("pcb-real", version_name)
 
     frames, previewed = [], 0
     logger = task.get_logger() if task else None
@@ -296,9 +294,7 @@ def publish_generated(hyperdataset_id, gap_report, generated,
         ds_id, version_name, parent=parent,
         comment="Cosmos generation for '%s', pending review" % target_class)
 
-    dest = "%s/%s/%s" % (task.get_output_destination() or
-                         os.environ.get("CLEARML_FILES_HOST", ""),
-                         "pcb-synthetic", version_name) if task else "pcb-synthetic"
+    dest = hd.files_dest("pcb-synthetic", version_name)
 
     frames = []
     for path in (generated or {}).get("paths") or []:

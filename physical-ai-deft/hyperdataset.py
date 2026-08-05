@@ -270,6 +270,27 @@ def label_count(version_id: str, labels: list[str]) -> int:
 
 
 # ------------------------------------------------------------- uploading ----
+def files_dest(*parts: str) -> str:
+    """A folder URI on the tenant's own fileserver.
+
+    Resolved from `Session.get_files_server_host()`, which reads the running
+    task's actual configuration. The obvious alternative,
+    `Task.get_output_destination()`, returns the task's `output_uri` -- which is
+    None unless somebody set it, and a None here does not fail loudly: it makes
+    a relative path, `upload_file` writes to local disk inside a pod that is
+    about to be deleted, and the frames get committed pointing at URIs that
+    resolve for nobody. A dataset version that looks correct and has no
+    readable images is a worse outcome than a stage that stops.
+    """
+    from clearml.backend_api import Session
+    host = (Session.get_files_server_host() or "").rstrip("/")
+    if not host:
+        raise HyperDatasetError(
+            "no files server configured -- frames would be registered against "
+            "URIs nothing can resolve")
+    return "/".join([host] + [p.strip("/") for p in parts if p])
+
+
 def upload_image(local_path: str, dest_folder: str) -> str:
     """Put an image somewhere the server and the UI can both resolve.
 
