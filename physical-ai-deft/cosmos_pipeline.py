@@ -221,20 +221,19 @@ def assemble_trainset(real_id, synthetic_id, dataset_name="pcb-trainset",
 def _gpu_docker_args():
     """Container args for the Cosmos step.
 
-    HF_TOKEN is forwarded from the launching shell so the step can pull gated
-    Cosmos weights. Be aware: anything passed this way is STORED ON THE TASK and
-    readable by anyone with project access -- fine for a throwaway lab, wrong for
-    a real one. The lab recipe injects it into task pods from the namespace
-    Kubernetes Secret instead, and then this branch never fires.
+    Note what is NOT here: HF_TOKEN. On a physical-ai-deft lab the token (and
+    NGC_KEY) arrive in the task pod's environment from the namespace
+    `lab-credentials` Secret, wired by the recipe's queue_overrides. Passing a
+    credential through docker_args instead would write it onto the TASK RECORD,
+    where anyone with project access can read it -- and it shows up verbatim in
+    the Execution tab, which is how it ended up needing to be redacted out of a
+    lab-guide screenshot. If a stage reports the token missing, fix the Secret;
+    do not put it back here.
+
+    HF_HUB_DISABLE_XET stays: the Xet transport is not reliable from the
+    cluster's egress path and falls back slowly.
     """
-    import os
-    args = ("-e CLEARML_AGENT_SKIP_PYTHON_ENV_INSTALL=1 -e HF_HUB_DISABLE_XET=1")
-    token = os.environ.get("HF_TOKEN")
-    if token:
-        print("WARNING: forwarding HF_TOKEN via docker_args -- it will be visible "
-              "on the task record. Use a Kubernetes Secret for anything real.")
-        args += " -e HF_TOKEN=%s" % token
-    return args
+    return "-e CLEARML_AGENT_SKIP_PYTHON_ENV_INSTALL=1 -e HF_HUB_DISABLE_XET=1"
 
 
 def main():
