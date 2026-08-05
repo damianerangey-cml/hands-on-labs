@@ -96,19 +96,34 @@ def launch(container: str = COSMOS_REASON,
     Returns as soon as the launch is accepted -- the container still has to be
     pulled and the model loaded. Call `wait_ready`.
     """
+    # Each value must match the TYPE ITS FORM FIELD DECLARES -- the apiserver
+    # validates launch_params against the launch template, and is strict in
+    # both directions. `max_idle_time_hour` is declared `string`, so 1 is
+    # rejected with "'string' expected"; `run_as_root` is declared `boolean`,
+    # so "true" is rejected with "'boolean' expected". There is no blanket
+    # rule to apply here; when adding a field, read its `type` in
+    # `launch_fields`' underlying template and match it.
     params: dict = {
-        "session_name": session_name,
-        "project": project,
-        "container": container,
-        "queue_name": queue_name,
-        "max_idle_time_hour": max_idle_hours,
-        "run_as_root": True,
-        "session_tags": list(tags or ["deft", "evaluator"]),
+        "session_name": str(session_name),
+        "project": str(project),
+        "container": str(container),
+        "queue_name": str(queue_name),
+        "max_idle_time_hour": str(max_idle_hours),   # declared string
+        "run_as_root": True,                          # declared enumeration/bool
+        "session_tags": ",".join(str(t) for t in (tags or ["deft", "evaluator"])),
     }
-    # The form takes env vars as two parallel lists, not a dict.
-    if env:
-        params["env_key"] = list(env.keys())
-        params["env_val"] = [str(v) for v in env.values()]
+    # Environment variables. `env_key`/`env_val` are a single text PAIR in the
+    # wizard (one row the UI repeats), while `environment_vars_list` is the
+    # collapsed list the launcher actually consumes -- and it is REQUIRED even
+    # with no env vars to set, failing the launch with "Configuration parameter
+    # is missing" rather than defaulting to empty. It does not appear in
+    # get_launch_template's field list at all, because the form derives it:
+    # the one place where asking the app what it takes does not tell you
+    # everything.
+    env = dict(env or {})
+    params["env_key"] = ""
+    params["env_val"] = ""
+    params["environment_vars_list"] = ["%s=%s" % (k, v) for k, v in env.items()]
 
     out = _call("launch_instance", {"app": app, "launch_params": params})
     instance = out.get("instance")
