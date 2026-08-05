@@ -50,6 +50,8 @@ _MIRROR_MARK = "results/.clearml_mirrored_seq"
 # Pull every number we can name, ignore the rest.
 _KV = re.compile(r"([A-Za-z][A-Za-z0-9_\-]*)\s*[=:]\s*(-?\d+(?:\.\d+)?)\s*(%?)")
 _BARE_PCT = re.compile(r"\b([A-Za-z][A-Za-z0-9_]*)\s+(-?\d+(?:\.\d+)?)%")
+# "<metric> 6.34% -> 3.11%": the number after the arrow is the current value.
+_ARROW = re.compile(r"\s*%?\s*-+>\s*(-?\d+(?:\.\d+)?)")
 
 # Only these become scalars; everything else stays in the summary text. Keeps
 # the metrics list readable instead of a wall of parsed noise.
@@ -149,16 +151,29 @@ def report_stage(task, stage, iteration, status, duration_sec, output, workspace
 def extract_metrics(text):
     """Pull named numbers out of a stage's output. Deliberately tolerant: TAO
     stages print in several shapes and we would rather miss a metric than crash
-    a stage over a parse."""
+    a stage over a parse.
+
+    One shape needs care. DEFT's own status line reports an improvement as
+    `FAR 6.34% -> 3.11% (target <0.5%)`. Naive parsing takes 6.34 -- the value
+    BEFORE this iteration -- and the KPI chart then plots the wrong number, in
+    the wrong direction. When a metric is followed by an arrow, the value after
+    the arrow is the current one."""
     found = {}
     for match in list(_KV.finditer(text)) + list(_BARE_PCT.finditer(text)):
         name = match.group(1).lower()
         if name not in _METRICS:
             continue
         try:
-            found[name] = float(match.group(2))
+            value = float(match.group(2))
         except (TypeError, ValueError):
             continue
+        after = _ARROW.match(text[match.end():])
+        if after:
+            try:
+                value = float(after.group(1))
+            except (TypeError, ValueError):
+                pass
+        found[name] = value
     return found
 
 

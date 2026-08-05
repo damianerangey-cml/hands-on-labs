@@ -32,6 +32,17 @@ are readable by anyone with project access. Secrets are injected into task pods
 from the lab namespace's k8s Secret by the agent's pod template. `env` is for
 non-secret knobs only (HF_HUB_DISABLE_XET, PYTHONPATH, ...).
 
+VERIFIED on lab1, 2026-08-05 (probe_parity.py): an arbitrary public image
+(python:3.11-slim -- not a CUDA image) ran as a ClearML task with a custom
+command and was given a real GPU: NVIDIA A10G, 5757 MiB, driver 535.216.01.
+The 5757 MiB is CFGI enforcing the 0.25 slice, so stages really can ask for a
+fraction of a card per queue. The image's own python was used
+(CLEARML_AGENT_SKIP_PYTHON_ENV_INSTALL=1) with only the clearml SDK layered on
+by the container setup script -- exactly the combination below. Do not drop
+either half: without the skip flag the agent builds a venv inside NVIDIA's
+image; without the setup script `import clearml` fails and the stage dies
+before it reports anything.
+
 ASCII-only.
 """
 import time
