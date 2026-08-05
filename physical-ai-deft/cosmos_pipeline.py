@@ -263,8 +263,13 @@ def main():
         function_return=["synthetic_id"],
         packages=GPU_PACKAGES, docker=GPU_IMAGE,
         docker_args=_gpu_docker_args(),
+        # BOTH lines matter. CLEARML_AGENT_SKIP_PYTHON_ENV_INSTALL makes the
+        # agent use the image's own torch instead of building a venv -- but it
+        # also means `packages=` is never installed, so the step must pip-install
+        # its own dependencies here or it dies on `import clearml`.
         docker_bash_setup_script=(
-            "apt-get update -qq && apt-get install -y -qq libgl1 libglib2.0-0 || true"),
+            "apt-get update -qq && apt-get install -y -qq libgl1 libglib2.0-0 || true\n"
+            "python3 -m pip install -q --no-input " + " ".join(GPU_PACKAGES)),
         execution_queue=GPU_QUEUE)
 
     pipe.add_function_step(
