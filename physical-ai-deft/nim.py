@@ -174,6 +174,94 @@ def launch(container: str = COSMOS_REASON,
     return instance
 
 
+def launch_via_container(container: str = COSMOS_REASON,
+                         command_line: str = "bash /opt/nim/start_server.sh",
+                         internal_port: int = 8000,
+                         queue_name: str = "1XGPU",
+                         project: str = "Physical AI Inspection",
+                         session_name: str = "Cosmos Reason (evaluator)",
+                         max_idle_hours: float = 1,
+                         env: dict | None = None,
+                         tags: list[str] | None = None) -> str:
+    """Same lifecycle, launched through `container_launcher` instead of `nim`.
+
+    WHY THIS EXISTS. The `nim` app's session manager execs the image's start
+    script directly, and on cosmos-reason2-2b:1.7.0 that fails:
+
+        OSError: [Errno 8] Exec format error: '/opt/nim/start_server.sh'
+
+    The script is not the problem -- on the same image, on the same node, in a
+    plain pod, `/opt/nim/start_server.sh --help` exits 0. The app and this image
+    disagree about something, and we do not need to win that argument to get an
+    evaluator: `container_launcher` takes a `command_line` and explicitly
+    ignores the image's entrypoint, so running the script THROUGH bash sidesteps
+    the exec path entirely.
+
+    Everything else is unchanged -- `wait_ready`, `score_image` and `stop` do not
+    care which app launched the instance, because an instance is an instance.
+
+    router_type=http gets the same JWT-authenticated gateway endpoint the nim
+    app produces; tcp would expose the port unauthenticated.
+    """
+    env = dict(env or {})
+    env.setdefault("CLEARML_AGENT_SKIP_PYTHON_ENV_INSTALL", "1")
+    # CAP THE CONTEXT WINDOW OR THE ENGINE WILL NOT START ON AN A10G.
+    #
+    # cosmos-reason2-2b defaults to max_model_len=262144. vLLM sizes its KV
+    # cache to serve one request at the full context, and refuses to start if
+    # it cannot:
+    #
+    #   ValueError: To serve at least one request with the model's max seq len
+    #   (262144), 29.0 GiB KV cache is needed, which is larger than the
+    #   available KV cache memory (12.33 GiB)
+    #
+    # The card has 22.1 GiB; weights take 4.74 and the rest is not enough for a
+    # 256K context. Nothing platform-specific about this -- the same container
+    # fails the same way under plain `docker run` on the same GPU.
+    #
+    # 32768 is far more than this stage needs: one image plus a two-sentence
+    # question is a few thousand tokens. vLLM's own estimate for this card was
+    # 111440, so there is a wide margin.
+    env.setdefault("NIM_MAX_MODEL_LEN", "32768")
+
+    params = {
+        "session_name": str(session_name),
+        "project": str(project),
+        "container": str(container),
+        "command_line": str(command_line),
+        "working_dir": "/opt/nim",
+        "queue_name": str(queue_name),
+        "router_type": "http",
+        "router_internal_port": int(internal_port),
+        "max_idle_time_hour": str(max_idle_hours),
+        "run_as_root": True,
+        # The image ships its own Python with the NIM runtime in it. Letting
+        # the agent build a venv is the same failure the nim app hits.
+        "disable_clearml_venv": True,
+        "continuous_console_logging": True,
+        "monitor_endpoint": True,
+        "session_tags": ",".join(str(t) for t in (tags or ["deft", "evaluator"])),
+        "setup_shell_script": _SETUP_SCRIPT,
+        "environment_vars_list": [
+            {"env_key": str(k), "env_val": str(v)} for k, v in env.items()],
+        # `config_files` is the second derived list on this form, with
+        # target_file/config_content as its item_template -- exactly the same
+        # shape as environment_vars_list, and required even when empty.
+        # If a launch 400s with "Configuration parameter is missing", look for
+        # a list whose item fields you are sending at the top level instead.
+        "config_files": [],
+        "storage_session": "",
+        "container_args": "",
+    }
+    out = _call("launch_instance", {"app": "containerlaunch",
+                                    "launch_params": params})
+    instance = out.get("instance")
+    if not instance:
+        raise NimError("launch_instance returned no instance id: %r" % out)
+    print("launched", container, "via container_launcher ->", instance)
+    return instance
+
+
 def info(instance: str) -> dict:
     return _call("get_instance_info", {"instance": instance}).get("info") or {}
 
