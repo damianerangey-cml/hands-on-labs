@@ -52,6 +52,34 @@ import time
 # see the recipe's `lab-credentials` note.
 COSMOS_REASON = "nvcr.io/nim/nvidia/cosmos-reason2-2b:1.7.0"
 
+# NIM images ship with NVIDIA's INTERNAL pip index baked into their pip config
+# (urm.nvidia.com/artifactory/api/pypi/nv-shared-pypi). It is not reachable from
+# outside NVIDIA, so the app's default setup script -- which bootstraps pip and
+# then installs clearml-agent -- dies on DNS:
+#
+#   Failed to establish a new connection: [Errno -5] No address associated
+#   with hostname ... /simple/clearml-agent/
+#   ERROR: No matching distribution found for clearml-agent
+#   /usr/bin/python3.12: No module named clearml_agent
+#
+# and the pod sits Running with nothing serving. Forcing the public index for
+# the bootstrap is enough; it does not affect the model server, which is
+# already baked into the image and installs nothing.
+#
+# Comments are NOT supported in this field (the app's own hint says so) -- keep
+# it to plain commands.
+_SETUP_SCRIPT = (
+    "export PIP_INDEX_URL=https://pypi.org/simple\n"
+    "export PIP_EXTRA_INDEX_URL=\n"
+    "export PIP_TRUSTED_HOST=pypi.org\n"
+    'python3 -c "import urllib.request, ssl; ctx = ssl.create_default_context(); '
+    "ctx.check_hostname = False; ctx.verify_mode = ssl.CERT_NONE; "
+    "code = urllib.request.urlopen('https://bootstrap.pypa.io/get-pip.py', "
+    'context=ctx).read(); exec(code)"\n'
+    "python3 -m pip install --index-url https://pypi.org/simple clearml-agent\n"
+    "export LOCAL_PYTHON=python3\n"
+)
+
 _TERMINAL = {"completed", "stopped", "failed", "closed", "aborted"}
 
 
@@ -111,19 +139,32 @@ def launch(container: str = COSMOS_REASON,
         "max_idle_time_hour": str(max_idle_hours),   # declared string
         "run_as_root": True,                          # declared enumeration/bool
         "session_tags": ",".join(str(t) for t in (tags or ["deft", "evaluator"])),
+        "setup_shell_script": _SETUP_SCRIPT,
     }
-    # Environment variables. `env_key`/`env_val` are a single text PAIR in the
-    # wizard (one row the UI repeats), while `environment_vars_list` is the
-    # collapsed list the launcher actually consumes -- and it is REQUIRED even
-    # with no env vars to set, failing the launch with "Configuration parameter
-    # is missing" rather than defaulting to empty. It does not appear in
-    # get_launch_template's field list at all, because the form derives it:
-    # the one place where asking the app what it takes does not tell you
-    # everything.
+    # Environment variables go over as `environment_vars_list`: a list of
+    # {env_key, env_val} OBJECTS.
+    #
+    # `env_key` and `env_val` show up as top-level names in the flattened
+    # launch template, which is misleading -- they are the list's item_template
+    # (see container_launcher.app.conf), not fields in their own right. Sending
+    # them at the top level, or sending the list as "KEY=VALUE" strings, gets
+    # you a 500 with "'str' object has no attribute 'get'" once the server
+    # iterates it. An EMPTY list passes either way, which is exactly why this
+    # only surfaces the first time you actually set a variable.
+    #
+    # The key itself is required even when empty: omit it and the launch fails
+    # with "Configuration parameter is missing".
+    # SKIP_PYTHON_ENV_INSTALL is not optional here, which is why it is a
+    # default rather than something a caller remembers. Without it the agent
+    # builds a fresh venv inside the image and runs the session out of THAT --
+    # so the session starts in a Python that has no vllm, no NIM runtime,
+    # nothing the image was built for, and dies with "Process failed, exit code
+    # 1" after a long and completely misleading pip log. Same trap the Cosmos
+    # stages hit; see run_stage.py.
     env = dict(env or {})
-    params["env_key"] = ""
-    params["env_val"] = ""
-    params["environment_vars_list"] = ["%s=%s" % (k, v) for k, v in env.items()]
+    env.setdefault("CLEARML_AGENT_SKIP_PYTHON_ENV_INSTALL", "1")
+    params["environment_vars_list"] = [
+        {"env_key": str(k), "env_val": str(v)} for k, v in env.items()]
 
     out = _call("launch_instance", {"app": app, "launch_params": params})
     instance = out.get("instance")
@@ -202,7 +243,10 @@ def stop(instance: str, wait_s: int = 120) -> bool:
     ignores it accumulates a held GPU per pass.
     """
     try:
-        _call("stop", {"tasks": [instance]}, service="tasks")
+        # `task` singular, and `force` -- tasks.stop rejects a `tasks` LIST with
+        # a validation error, and without force it refuses an instance that is
+        # still starting up, which is exactly when a failed launch needs killing.
+        _call("stop", {"task": instance, "force": True}, service="tasks")
     except NimError as e:
         print("  stop request failed:", str(e)[:200])
         return False
