@@ -41,7 +41,9 @@ CPU_PACKAGES = ["clearml", "huggingface_hub", "pillow"]
 # --------------------------------------------------------------------------
 # step 1 -- ingest the real inspection data
 # --------------------------------------------------------------------------
-def ingest_pcb(dataset_name="pcb-real", hf_repo=HF_DATASET):
+def ingest_pcb(dataset_name="pcb-real",
+               hf_repo="nvidia/Cosmos-AnomalyGen-PCB-Dataset",
+               project="Physical AI Inspection"):
     """Pull NVIDIA's PCB reference set and version it as a ClearML Dataset.
 
     This is the 'curate' end of the blueprint in its simplest honest form: real
@@ -55,7 +57,7 @@ def ingest_pcb(dataset_name="pcb-real", hf_repo=HF_DATASET):
                               token=os.environ.get("HF_TOKEN"))
     print("downloaded", hf_repo, "->", local)
 
-    ds = Dataset.create(dataset_name=dataset_name, dataset_project=PROJECT)
+    ds = Dataset.create(dataset_name=dataset_name, dataset_project=project)
     ds.add_files(local)
     ds.upload()
     ds.finalize()
@@ -84,7 +86,7 @@ def ingest_pcb(dataset_name="pcb-real", hf_repo=HF_DATASET):
 # --------------------------------------------------------------------------
 # step 2 -- inspect what we have (and, more importantly, what we do NOT)
 # --------------------------------------------------------------------------
-def inspect_pcb(dataset_id):
+def inspect_pcb(dataset_id, project="Physical AI Inspection"):
     """Count real examples per texture and defect type.
 
     This is the step that motivates the whole lab: the defect classes with the
@@ -137,7 +139,8 @@ def inspect_pcb(dataset_id):
 # step 3 -- augment: generate what the real data lacks
 # --------------------------------------------------------------------------
 def generate_synthetic(dataset_id, num_images=8, steps=30, seed=0,
-                       dataset_name="pcb-synthetic"):
+                       dataset_name="pcb-synthetic",
+                       project="Physical AI Inspection"):
     """Run Cosmos and version the output as a child dataset of the real one.
 
     Parenting matters more than it looks: it is what later lets anyone answer
@@ -185,7 +188,7 @@ def generate_synthetic(dataset_id, num_images=8, steps=30, seed=0,
                                 iteration=i, local_path=p)
         print("generated %d/%d -> %s" % (i + 1, int(num_images), p))
 
-    ds = Dataset.create(dataset_name=dataset_name, dataset_project=PROJECT,
+    ds = Dataset.create(dataset_name=dataset_name, dataset_project=project,
                         parent_datasets=[dataset_id])
     ds.add_files(out_dir)
     ds.upload()
@@ -197,12 +200,13 @@ def generate_synthetic(dataset_id, num_images=8, steps=30, seed=0,
 # --------------------------------------------------------------------------
 # step 4 -- assemble the training set, with both parents
 # --------------------------------------------------------------------------
-def assemble_trainset(real_id, synthetic_id, dataset_name="pcb-trainset"):
+def assemble_trainset(real_id, synthetic_id, dataset_name="pcb-trainset",
+                      project="Physical AI Inspection"):
     """One dataset version whose lineage names both sources. This is the object
     a retrain consumes, and the object an auditor opens."""
     from clearml import Dataset
 
-    ds = Dataset.create(dataset_name=dataset_name, dataset_project=PROJECT,
+    ds = Dataset.create(dataset_name=dataset_name, dataset_project=project,
                         parent_datasets=[real_id, synthetic_id])
     ds.finalize()
     print("=" * 66)
