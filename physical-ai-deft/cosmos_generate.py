@@ -119,15 +119,27 @@ def main():
     # library mystery into a fact.
     import diffusers
     print("diffusers", diffusers.__version__)
+    for cname, comp in pipe.components.items():
+        print("  component %-16s %-34s module=%s" % (
+            cname, type(comp).__name__, isinstance(comp, torch.nn.Module)))
+
+    # WORKAROUND -- diffusers 0.39.0 regression.
+    # Cosmos2TextToImagePipeline.__call__ reads self._execution_device. In 0.39
+    # that property's getter raises, and DiffusionPipeline.__getattr__ masks the
+    # real cause behind "object has no attribute '_execution_device'". Every
+    # component loads correctly and .to("cuda") succeeds, so the pipeline IS on
+    # the GPU -- only the lookup is broken. Pinning diffusers back is not an
+    # option: 0.35.x cannot import against current transformers
+    # (FLAX_WEIGHTS_NAME was removed in transformers 5). So pin the property to
+    # the device we just placed the pipeline on. Drop this once upstream fixes
+    # the getter.
     try:
-        for cname, comp in pipe.components.items():
-            print("  component %-16s %-34s module=%s" % (
-                cname, type(comp).__name__, isinstance(comp, torch.nn.Module)))
-        print("  exclude_from_cpu_offload:", getattr(pipe, "_exclude_from_cpu_offload", "<missing>"))
-        print("  offload_seq:", getattr(pipe, "model_cpu_offload_seq", "<missing>"))
         print("  _execution_device:", pipe._execution_device)
-    except Exception as exc:
-        print("  component introspection failed: %s: %s" % (type(exc).__name__, exc))
+    except AttributeError:
+        placed = next((p.device for p in pipe.transformer.parameters()), torch.device("cuda"))
+        type(pipe)._execution_device = property(lambda self, _d=placed: _d)
+        print("  patched _execution_device -> %s (diffusers %s regression)"
+              % (placed, diffusers.__version__))
 
     generator = torch.Generator(device="cpu").manual_seed(int(hp["seed"]))
     out_dir = "cosmos_out"
