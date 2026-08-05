@@ -221,14 +221,19 @@ def latest_published(dataset_id: str) -> dict | None:
     target. `only_published` makes 'the latest version' mean something.
     """
     out = _call("get_versions", {"dataset": dataset_id, "only_published": True,
-                                 "page": 0, "page_size": 50})
+                                 "order_by": ["-created"], "page": 0,
+                                 "page_size": 50})
     versions = out.get("versions") or []
     if not versions:
         return None
-    # The API does not promise an order here, so sort rather than assume.
-    # 'created' is present on every version; fall back to name for old records.
-    versions.sort(key=lambda v: (v.get("created") or "", v.get("name") or ""))
-    return versions[-1]
+    # Ordered server-side by -created (the endpoint's own default field), then
+    # sorted again here. Belt and braces on purpose: if `created` were ever
+    # absent from the response the server-side order would still look plausible
+    # while being arbitrary, and picking the wrong "latest version" is a silent
+    # failure -- the loop would enrich one version and train on another.
+    versions.sort(key=lambda v: (v.get("created") or "", v.get("name") or ""),
+                  reverse=True)
+    return versions[0]
 
 
 def stats(version_id: str) -> dict:
