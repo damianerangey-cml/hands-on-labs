@@ -1,55 +1,86 @@
-"""The Physical AI Data Factory as ONE ClearML pipeline.
+"""The Physical AI Data Factory, as a ClearML pipeline over a HyperDataset.
 
-NVIDIA's blueprint has three stages -- curate, augment, evaluate. This runs the
-first two as a real, triggerable ClearML pipeline over real PCB inspection data,
-so the whole data path is one object you can re-run, parameterise and audit:
+    register  ->  read the gap  ->  Cosmos generates  ->  publish a new version
 
-    ingest ──► inspect ──► generate (GPU) ──► assemble
-    (real)     (curate)    (Cosmos)          (real + synthetic, with lineage)
+Every stage is a tracked task. The thing they pass between them is not a folder
+of images -- it is a HYPERDATASET, and each pass reads the latest published
+version and writes the next one.
 
-Why a pipeline and not four scripts: every step becomes its own tracked task, the
-DAG is a first-class object, and the datasets it produces are PARENTED -- so the
-question "was any of this synthetic, and which images?" is answered by clicking a
-version, not by reading someone's notes.
+WHAT CHANGED FROM THE DATASET VERSION OF THIS PIPELINE, AND WHY
+---------------------------------------------------------------
+The old `inspect` step downloaded the whole dataset onto a worker and walked
+the filesystem counting files per directory. It worked, and it is the wrong
+shape for what this lab is becoming: an agent that decides what to generate
+next has to ask "what am I short of?" on every pass, and paying a full dataset
+download per question puts a floor under how often the loop can run -- and
+means the images have to be somewhere we are allowed to copy them to.
 
-    python cosmos_pipeline.py            # create + start on the cluster
+A HyperDataset holds a frame per image with labels and metadata, and the server
+aggregates. `hyperdataset.stats()` returns the per-label counts for a version
+in one call, no pixels moved. That is the difference between a loop you can run
+every few minutes and one you run once for a demo.
 
-Data source: nvidia/Cosmos-AnomalyGen-PCB-Dataset (public, ungated, ~1.9 MB) --
-NVIDIA's own PCB reference set. It ships clean boards, CAD masks, real defect
-examples and defect_spec.jsonl, which is exactly the input contract AnomalyGen
-expects.
+VERIFIED vs PENDING, AND WHY THE LABELS CARRY IT
+-------------------------------------------------
+A generator will cheerfully return two hundred plausible pictures that do not
+contain the defect it was asked for. If those were published under the defect's
+own label, the next pass would count them, conclude the gap was closed, and
+move on -- and the training branch would train on them.
 
-ASCII-only.
+So a generated frame is published under the label `pending-review`, NOT under
+its intended class. It becomes `solder_bridge` only once something has looked
+at it and agreed. That keeps the cheap count honest: `stats()['labels']` shows
+what is actually confirmed, and `pending-review` shows the backlog waiting on
+the evaluator. The evaluator (Cosmos Reason, served as a NIM -- see the lab
+guide, in build) is what re-labels them.
+
+Until that stage exists, generated frames sit at `pending-review` and the gap
+does not close. That is the correct behaviour, not a limitation: the loop
+declining to believe its own output is the property we want.
+
+Data source: nvidia/Cosmos-AnomalyGen-PCB-Dataset (public, ungated).
 """
 from clearml import PipelineController
 
 PROJECT = "Physical AI Inspection"
-CPU_QUEUE = "1XCPU"
+CPU_QUEUE = "default"
 GPU_QUEUE = "1XGPU"
 
-HF_DATASET = "nvidia/Cosmos-AnomalyGen-PCB-Dataset"
-
-# The GPU step runs the Cosmos pipeline, so it needs the same container contract
-# cosmos_generate.py proved: the image's own torch, inference libs layered on,
-# and OpenGL for the guardrail's opencv dependency.
-GPU_IMAGE = "pytorch/pytorch:2.6.0-cuda12.6-cudnn9-runtime"
-GPU_PACKAGES = ["clearml", "diffusers", "transformers", "accelerate",
-                "sentencepiece", "protobuf", "safetensors", "cosmos_guardrail"]
+# Cosmos-Predict2 needs CUDA 12.x + a recent diffusers. This image is the one
+# proven on the deft NodePool (driver 580); see the PRD for the trail.
+GPU_IMAGE = "nvcr.io/nvidia/pytorch:25.01-py3"
 CPU_PACKAGES = ["clearml", "huggingface_hub", "pillow"]
+GPU_PACKAGES = ["clearml", "diffusers>=0.39", "transformers", "accelerate",
+                "huggingface_hub", "pillow", "sentencepiece", "protobuf"]
+
+# The steps import `hyperdataset` from this repo. add_function_step serialises
+# the function BODY only -- module globals and sibling imports do not travel --
+# so a step that needs a module has to clone the repo it lives in. No commit
+# pin: a push to main changes what the next run executes, which is the intended
+# behaviour for lab code (see the HOL lab-examples convention).
+REPO = "https://github.com/damianerangey-cml/hands-on-labs.git"
+REPO_BRANCH = "main"
+WORKDIR = "physical-ai-deft"
+
+HYPERDATASET = "PCB Inspection"
 
 
 # --------------------------------------------------------------------------
-# step 1 -- ingest the real inspection data
+# step 1 -- register the real data as a published HyperDataset version
 # --------------------------------------------------------------------------
-def ingest_pcb(dataset_name="pcb-real",
-               hf_repo="nvidia/Cosmos-AnomalyGen-PCB-Dataset",
-               project="Physical AI Inspection"):
-    """Pull NVIDIA's PCB reference set and version it as a ClearML Dataset.
+def register_real(hyperdataset_name="PCB Inspection",
+                  hf_repo="nvidia/Cosmos-AnomalyGen-PCB-Dataset",
+                  version_name="v1-real"):
+    """Real inspection data in, as frames with labels and metadata.
 
-    This is the 'curate' end of the blueprint in its simplest honest form: real
-    data in, versioned, addressable by name from every later step."""
+    The directory layout carries the labels -- `<texture>/anomaly_image/<defect>`
+    and `<texture>/clean_image` -- so the ingest reads the tree once and turns
+    it into per-frame labels. After this, nobody needs to know that layout
+    again; the labels are queryable.
+    """
     import os
-    from clearml import Dataset, Task
+    import hyperdataset as hd
+    from clearml import Task
     from huggingface_hub import snapshot_download
 
     task = Task.current_task()
@@ -57,119 +88,148 @@ def ingest_pcb(dataset_name="pcb-real",
                               token=os.environ.get("HF_TOKEN"))
     print("downloaded", hf_repo, "->", local)
 
-    ds = Dataset.create(dataset_name=dataset_name, dataset_project=project)
-    ds.add_files(local)
-    ds.upload()
-    ds.finalize()
-    print("registered dataset", dataset_name, ds.id)
+    ds_id = hd.get_or_create_dataset(hyperdataset_name, tags=["physical-ai", "pcb"])
+    version_id = hd.create_draft(
+        ds_id, version_name,
+        comment="NVIDIA %s, ingested verbatim" % hf_repo)
+    print("dataset", ds_id, "draft version", version_id)
 
-    # Show the reader what actually came in, without making them go looking.
-    if task:
-        logger = task.get_logger()
-        shown = 0
-        for root, _dirs, files in os.walk(local):
-            for f in sorted(files):
-                if not f.lower().endswith((".jpg", ".png")):
-                    continue
-                kind = ("clean" if "clean_image" in root else
-                        "defect" if "anomaly_image" in root else
-                        "mask" if "mask" in root else "other")
-                if kind == "other" or shown >= 12:
-                    continue
-                # All at iteration 0 with DISTINCT series names, so the Debug
-                # Samples tab renders them as one grid. Reporting the same
-                # series at increasing iterations instead buries each image on
-                # its own row behind a scrubber -- technically the same data,
-                # useless as a "here is your input data" view.
-                logger.report_image(title="real data", series="%s_%02d" % (kind, shown),
-                                    iteration=0, local_path=os.path.join(root, f))
-                shown += 1
-        print("previewed", shown, "real images into DEBUG SAMPLES")
-    return ds.id
+    dest = "%s/%s/%s" % (task.get_output_destination() or
+                         os.environ.get("CLEARML_FILES_HOST", ""),
+                         "pcb-real", version_name) if task else "pcb-real"
+
+    frames, previewed = [], 0
+    logger = task.get_logger() if task else None
+    for root, _dirs, files in os.walk(local):
+        parts = os.path.relpath(root, local).split(os.sep)
+        if "anomaly_image" in parts:
+            kind, texture, defect = "anomaly", parts[0], parts[-1]
+        elif "clean_image" in parts:
+            kind, texture, defect = "clean", parts[0], None
+        elif "mask" in parts:
+            kind, texture, defect = "mask", parts[0], parts[-1]
+        else:
+            continue
+
+        for f in sorted(files):
+            if not f.lower().endswith((".jpg", ".png")):
+                continue
+            path = os.path.join(root, f)
+            uri = hd.upload_image(path, dest)
+            # Masks are not training examples -- they are the conditioning
+            # input for mask-guided generation. Labelling them as defects
+            # would double-count every anomaly in the stats.
+            labels = ([defect] if kind == "anomaly" and defect else
+                      ["clean"] if kind == "clean" else ["mask"])
+            frames.append(hd.make_frame(
+                uri, labels=labels,
+                meta=hd.frame_meta(origin="real", texture=texture,
+                                   defect=defect, kind=kind, verified=True),
+                content_type="image/png" if f.lower().endswith(".png") else "image/jpeg"))
+
+            if logger and kind in ("anomaly", "clean") and previewed < 12:
+                # One grid, not twelve rows: same iteration, distinct series.
+                logger.report_image(title="real data",
+                                    series="%s_%02d" % (kind, previewed),
+                                    iteration=0, local_path=path)
+                previewed += 1
+
+    saved = hd.add_frames(version_id, frames)
+    hd.commit(version_id, publish=True)
+    print("=" * 66)
+    print("published %s / %s  --  %d frames" % (hyperdataset_name, version_name, saved))
+    print("=" * 66)
+    return ds_id
 
 
 # --------------------------------------------------------------------------
-# step 2 -- inspect what we have (and, more importantly, what we do NOT)
+# step 2+3 -- read the latest published version's metadata, and find the gap
 # --------------------------------------------------------------------------
-def inspect_pcb(dataset_id, project="Physical AI Inspection"):
-    """Count real examples per texture and defect type.
+def read_the_gap(hyperdataset_id, target_per_class=60):
+    """What are we short of? Answered from metadata, with no download.
 
-    This is the step that motivates the whole lab: the defect classes with the
-    fewest real examples are exactly the ones the model will miss, and no amount
-    of training fixes a class you have twelve photographs of."""
-    import collections
-    import json
-    import os
-    from clearml import Dataset, Task
+    This is the step the whole design turns on, so it is worth being precise
+    about what it does NOT do: it does not fetch a frame, open an image, or
+    touch object storage. It asks the apiserver for the label counts of the
+    latest published version and does arithmetic on the answer.
+
+    In the agentic version of this loop, the numbers this returns are what goes
+    into the prompt -- the model is choosing what to generate from a table of
+    counts, not from looking at pictures. That is what makes it cheap enough to
+    run on every pass, and what makes it viable against a customer's data.
+    """
+    import hyperdataset as hd
+    from clearml import Task
 
     task = Task.current_task()
-    local = Dataset.get(dataset_id=dataset_id).get_local_copy()
+    version = hd.latest_published(hyperdataset_id)
+    if not version:
+        raise SystemExit("no published version yet -- run the register step first")
 
-    counts = collections.Counter()
-    for root, _dirs, files in os.walk(local):
-        rel = os.path.relpath(root, local)
-        parts = rel.split(os.sep)
-        if "anomaly_image" in parts:
-            texture = parts[0]
-            defect = parts[-1]
-            counts["%s / %s" % (texture, defect)] += len(
-                [f for f in files if f.lower().endswith((".jpg", ".png"))])
+    counts = hd.stats(version["id"])["labels"]
+    print("latest published version:", version.get("name"), version["id"])
 
-    spec_path = os.path.join(local, "defect_spec.jsonl")
-    specs = []
-    if os.path.exists(spec_path):
-        for line in open(spec_path, encoding="utf-8"):
-            line = line.strip()
-            if line:
-                specs.append(json.loads(line))
+    # `clean`, `mask` and `pending-review` are bookkeeping labels, not defect
+    # classes; a gap in them means nothing.
+    housekeeping = {"clean", "mask", "pending-review"}
+    defects = {k: v for k, v in counts.items() if k not in housekeeping}
+    gap = {k: int(target_per_class) - v
+           for k, v in defects.items() if v < int(target_per_class)}
 
     print("=" * 66)
-    print("REAL DEFECT EXAMPLES PER CLASS")
-    for k, v in sorted(counts.items()):
-        print("  %-40s %4d" % (k, v))
-    print("defect types declared in defect_spec.jsonl:", len(specs))
+    print("CONFIRMED EXAMPLES PER DEFECT CLASS  (target %d)" % target_per_class)
+    for k in sorted(defects):
+        short = gap.get(k, 0)
+        print("  %-34s %4d %s" % (k, defects[k], ("  SHORT %d" % short) if short else ""))
+    if counts.get("pending-review"):
+        print("  %-34s %4d  (awaiting the evaluator -- not counted above)"
+              % ("pending-review", counts["pending-review"]))
     print("=" * 66)
 
-    if task and counts:
+    if task and defects:
         logger = task.get_logger()
-        # A BAR CHART, not scalars. A scalar reported once renders as a lone dot
-        # on a time axis, which says nothing -- and the entire point of this step
-        # is to make "8 real examples vs 62" legible at a glance.
-        labels = sorted(counts)
-        logger.report_histogram(
-            title="real examples per defect class", series="count",
-            values=[counts[k] for k in labels], xlabels=labels, iteration=0,
-            xaxis="texture / defect", yaxis="real images")
-        # Same numbers as a table, because a reader who wants the exact figure
-        # should not have to hover a bar to get it.
-        logger.report_table(
-            title="real examples per defect class", series="counts", iteration=0,
-            table_plot=[["texture / defect", "real images"]]
-                       + [[k, counts[k]] for k in labels])
-        task.upload_artifact("class_counts", dict(counts))
-    return {"counts": dict(counts), "defect_types": [s.get("defect_type") for s in specs]}
+        labels = sorted(defects)
+        # A bar chart, not scalars: a scalar reported once renders as a lone
+        # dot on a time axis, and "8 vs 62" is the entire point of this step.
+        logger.report_histogram(title="confirmed examples per defect class",
+                                series="count",
+                                values=[defects[k] for k in labels],
+                                xlabels=labels, iteration=0,
+                                xaxis="defect class", yaxis="confirmed frames")
+        logger.report_table(title="the gap", series="short of target", iteration=0,
+                            table_plot=[["defect class", "have", "target", "short"]]
+                                       + [[k, defects[k], int(target_per_class),
+                                           gap.get(k, 0)] for k in labels])
+        task.upload_artifact("gap", gap)
+
+    return {"version_id": version["id"], "version_name": version.get("name"),
+            "counts": defects, "gap": gap}
 
 
 # --------------------------------------------------------------------------
-# step 3 -- augment: generate what the real data lacks
+# step 4 -- Cosmos generates what the gap asks for
 # --------------------------------------------------------------------------
-def generate_synthetic(dataset_id, num_images=8, steps=30, seed=0,
-                       dataset_name="pcb-synthetic",
-                       project="Physical AI Inspection"):
-    """Run Cosmos and version the output as a child dataset of the real one.
+def generate_for_gap(gap_report, num_images=8, steps=30, seed=0):
+    """Generate images for the thinnest class, and hand back where they landed.
 
-    Parenting matters more than it looks: it is what later lets anyone answer
-    'how much of the training data was generated, and which images were they?'
-    by opening a dataset version instead of trusting a README."""
+    Deliberately does NOT publish. Generation and publication are separate
+    stages because the evaluator belongs between them -- a stage that generated
+    and published in one motion would leave nowhere to put the check.
+    """
     import os
     import torch
-    from clearml import Dataset, Task
+    from clearml import Task
     from diffusers import Cosmos2TextToImagePipeline
 
     task = Task.current_task()
     logger = task.get_logger() if task else None
     if not os.environ.get("HF_TOKEN"):
         raise SystemExit("HF_TOKEN not set in this pod -- gated Cosmos weights.")
+
+    gap = (gap_report or {}).get("gap") or {}
+    target_class = max(gap, key=gap.get) if gap else "solder_bridge"
+    print("generating for the thinnest class:", target_class,
+          "(short %d)" % gap.get(target_class, 0))
 
     model_id = "nvidia/Cosmos-Predict2-2B-Text2Image"
     pipe = Cosmos2TextToImagePipeline.from_pretrained(model_id, torch_dtype=torch.bfloat16)
@@ -181,57 +241,89 @@ def generate_synthetic(dataset_id, num_images=8, steps=30, seed=0,
         dev = next((p.device for p in pipe.transformer.parameters()), torch.device("cuda"))
         type(pipe)._execution_device = property(lambda self, _d=dev: _d)
 
-    prompts = [
-        "top-down photograph of a green printed circuit board, integrated circuit "
-        "with fine solder joints, even industrial inspection lighting, sharp focus",
-        "close-up of surface-mount passive components on a green PCB, macro "
-        "inspection photograph, diffuse lighting, high detail",
-    ]
+    readable = target_class.replace("_", " ")
+    prompt = ("top-down macro inspection photograph of a green printed circuit "
+              "board showing a %s defect, even industrial lighting, sharp focus, "
+              "high detail" % readable)
+
     out_dir = "synthetic"
     os.makedirs(out_dir, exist_ok=True)
     made = []
     for i in range(int(num_images)):
-        prompt = prompts[i % len(prompts)]
         gen = torch.Generator(device="cpu").manual_seed(int(seed) + i)
         image = pipe(prompt=prompt, num_inference_steps=int(steps),
                      guidance_scale=7.0, height=704, width=1280, generator=gen).images[0]
-        p = os.path.join(out_dir, "synthetic_%03d.png" % i)
+        p = os.path.join(out_dir, "%s_%03d.png" % (target_class, i))
         image.save(p)
         made.append(p)
         if logger:
-            # Same reasoning as the ingest step: one grid, not eight rows.
             logger.report_image(title="Cosmos", series="synthetic_%02d" % i,
                                 iteration=0, local_path=p)
         print("generated %d/%d -> %s" % (i + 1, int(num_images), p))
 
-    ds = Dataset.create(dataset_name=dataset_name, dataset_project=project,
-                        parent_datasets=[dataset_id])
-    ds.add_files(out_dir)
-    ds.upload()
-    ds.finalize()
-    print("registered", dataset_name, ds.id, "with", len(made), "images")
-    return ds.id
+    if task:
+        task.upload_artifact("generated", out_dir)
+    return {"dir": out_dir, "paths": made, "target_class": target_class,
+            "prompt": prompt, "model": model_id}
 
 
 # --------------------------------------------------------------------------
-# step 4 -- assemble the training set, with both parents
+# step 5 -- publish the generated frames as the next version
 # --------------------------------------------------------------------------
-def assemble_trainset(real_id, synthetic_id, dataset_name="pcb-trainset",
-                      project="Physical AI Inspection"):
-    """One dataset version whose lineage names both sources. This is the object
-    a retrain consumes, and the object an auditor opens."""
-    from clearml import Dataset
+def publish_generated(hyperdataset_id, gap_report, generated,
+                      version_name="v2-enriched"):
+    """A new published version = everything so far, plus what this pass made.
 
-    ds = Dataset.create(dataset_name=dataset_name, dataset_project=project,
-                        parent_datasets=[real_id, synthetic_id])
-    ds.finalize()
+    Parented on the version the gap was read from, so the new version is
+    cumulative. Publishing only the new frames would produce a "latest version"
+    containing nothing but synthetic images, and the training branch reads the
+    latest version.
+
+    Generated frames land under `pending-review`, not under the class they were
+    generated FOR. See the module docstring: the label is a claim about what is
+    in the picture, and nothing has checked that yet.
+    """
+    import os
+    import hyperdataset as hd
+    from clearml import Task
+
+    task = Task.current_task()
+    parent = (gap_report or {}).get("version_id")
+    target_class = (generated or {}).get("target_class")
+
+    ds_id = hyperdataset_id
+    version_id = hd.create_draft(
+        ds_id, version_name, parent=parent,
+        comment="Cosmos generation for '%s', pending review" % target_class)
+
+    dest = "%s/%s/%s" % (task.get_output_destination() or
+                         os.environ.get("CLEARML_FILES_HOST", ""),
+                         "pcb-synthetic", version_name) if task else "pcb-synthetic"
+
+    frames = []
+    for path in (generated or {}).get("paths") or []:
+        uri = hd.upload_image(path, dest)
+        frames.append(hd.make_frame(
+            uri, labels=["pending-review"],
+            meta=hd.frame_meta(origin="synthetic", defect=target_class,
+                               kind="anomaly", generator=(generated or {}).get("model"),
+                               parent_version=parent, verified=False,
+                               prompt=(generated or {}).get("prompt"))))
+
+    saved = hd.add_frames(version_id, frames)
+    hd.commit(version_id, publish=True)
+
+    counts = hd.stats(version_id)["labels"]
     print("=" * 66)
-    print("training set:", ds.id)
-    print("  parent (real)     :", real_id)
-    print("  parent (synthetic):", synthetic_id)
-    print("Open its lineage in the WebApp -- that graph IS the audit answer.")
+    print("published %s -- %d new frames, parented on %s" % (version_name, saved, parent))
+    print("version now holds:")
+    for k in sorted(counts):
+        print("  %-34s %4d" % (k, counts[k]))
+    print()
+    print("The %d new frames are 'pending-review', NOT '%s'." % (saved, target_class))
+    print("They start counting toward the gap once the evaluator confirms them.")
     print("=" * 66)
-    return ds.id
+    return {"version_id": version_id, "version_name": version_name, "added": saved}
 
 
 def _gpu_docker_args():
@@ -254,28 +346,35 @@ def _gpu_docker_args():
 
 def main():
     pipe = PipelineController(
-        name="Physical AI Data Factory", project=PROJECT, version="0.1.0",
+        name="Physical AI Data Factory", project=PROJECT, version="0.2.0",
         add_pipeline_tags=True)
     pipe.set_default_execution_queue(CPU_QUEUE)
 
     pipe.add_parameter("num_images", 8, description="how many images Cosmos generates")
     pipe.add_parameter("steps", 30, description="diffusion steps per image")
+    pipe.add_parameter("target_per_class", 60,
+                       description="confirmed examples we want of every defect class")
+
+    common = dict(repo=REPO, repo_branch=REPO_BRANCH, working_dir=WORKDIR)
 
     pipe.add_function_step(
-        name="ingest", function=ingest_pcb, function_return=["real_id"],
-        packages=CPU_PACKAGES, execution_queue=CPU_QUEUE, cache_executed_step=True)
+        name="register", function=register_real, function_return=["hyperdataset_id"],
+        packages=CPU_PACKAGES, execution_queue=CPU_QUEUE,
+        cache_executed_step=True, **common)
 
     pipe.add_function_step(
-        name="inspect", function=inspect_pcb,
-        function_kwargs={"dataset_id": "${ingest.real_id}"},
-        function_return=["report"], packages=CPU_PACKAGES, execution_queue=CPU_QUEUE)
+        name="read_the_gap", function=read_the_gap,
+        function_kwargs={"hyperdataset_id": "${register.hyperdataset_id}",
+                         "target_per_class": "${pipeline.target_per_class}"},
+        function_return=["gap_report"],
+        packages=CPU_PACKAGES, execution_queue=CPU_QUEUE, **common)
 
     pipe.add_function_step(
-        name="generate", function=generate_synthetic,
-        function_kwargs={"dataset_id": "${ingest.real_id}",
+        name="generate", function=generate_for_gap,
+        function_kwargs={"gap_report": "${read_the_gap.gap_report}",
                          "num_images": "${pipeline.num_images}",
                          "steps": "${pipeline.steps}"},
-        function_return=["synthetic_id"],
+        function_return=["generated"],
         packages=GPU_PACKAGES, docker=GPU_IMAGE,
         docker_args=_gpu_docker_args(),
         # BOTH lines matter. CLEARML_AGENT_SKIP_PYTHON_ENV_INSTALL makes the
@@ -285,14 +384,15 @@ def main():
         docker_bash_setup_script=(
             "apt-get update -qq && apt-get install -y -qq libgl1 libglib2.0-0 || true\n"
             "python3 -m pip install -q --no-input " + " ".join(GPU_PACKAGES)),
-        execution_queue=GPU_QUEUE)
+        execution_queue=GPU_QUEUE, **common)
 
     pipe.add_function_step(
-        name="assemble", function=assemble_trainset,
-        function_kwargs={"real_id": "${ingest.real_id}",
-                         "synthetic_id": "${generate.synthetic_id}"},
-        function_return=["trainset_id"],
-        packages=CPU_PACKAGES, execution_queue=CPU_QUEUE)
+        name="publish", function=publish_generated,
+        function_kwargs={"hyperdataset_id": "${register.hyperdataset_id}",
+                         "gap_report": "${read_the_gap.gap_report}",
+                         "generated": "${generate.generated}"},
+        function_return=["published"],
+        packages=CPU_PACKAGES, execution_queue=CPU_QUEUE, **common)
 
     # start()      -- controller itself runs on the cluster (production shape;
     #                 needs HF_TOKEN present in the pod, i.e. from a Secret).
