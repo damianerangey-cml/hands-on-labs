@@ -47,17 +47,19 @@ command this runbook does not cover, pass it through `deft_stages.stage()`.
 
 ### Which queue
 
-Queue = how much GPU the stage gets. Ask for what the stage needs:
+**Every GPU stage goes to `1XGPU` -- a whole A10G.** This lab deliberately does
+not use fractional GPU: TAO and Cosmos containers want a full card, and a
+whole-card pool is free to run whatever CUDA version the images need.
 
-| Stage | Queue | Why |
-|---|---|---|
-| `anomalygen` (SDG diffusion) | `1XGPU` | Cosmos-Predict2 2B + text encoder; wants a whole card |
-| `train` | `0.5XGPU` | ChangeNet fine-tune fits a half slice |
-| `evaluate`, `inference`, `data_mining`, `routing` | `0.25XGPU` | short, small |
-| `anomalygen_prep` (AMP routing) | `0.25XGPU` | ~10s, no diffusion |
+| Stage | Queue |
+|---|---|
+| `anomalygen` (Cosmos SDG diffusion), `train`, `evaluate`, `inference`, `data_mining` | `1XGPU` |
+| `anomalygen_prep` (AMP routing -- ~10s, no diffusion) | `1XCPU` |
 
-If a stage OOMs, move it up a size and say so in the loop log -- do not silently
-shrink the workload.
+One consequence to plan around: stages run **one at a time**. Do not try to
+parallelise iterations to "save time" -- there is one card. If a stage OOMs,
+that is a real signal about the model or the batch size; report it, do not
+silently shrink the workload.
 
 ---
 
