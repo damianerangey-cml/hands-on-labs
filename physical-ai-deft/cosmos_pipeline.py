@@ -76,8 +76,13 @@ def ingest_pcb(dataset_name="pcb-real",
                         "mask" if "mask" in root else "other")
                 if kind == "other" or shown >= 12:
                     continue
-                logger.report_image(title="real data", series=kind,
-                                    iteration=shown, local_path=os.path.join(root, f))
+                # All at iteration 0 with DISTINCT series names, so the Debug
+                # Samples tab renders them as one grid. Reporting the same
+                # series at increasing iterations instead buries each image on
+                # its own row behind a scrubber -- technically the same data,
+                # useless as a "here is your input data" view.
+                logger.report_image(title="real data", series="%s_%02d" % (kind, shown),
+                                    iteration=0, local_path=os.path.join(root, f))
                 shown += 1
         print("previewed", shown, "real images into DEBUG SAMPLES")
     return ds.id
@@ -184,8 +189,9 @@ def generate_synthetic(dataset_id, num_images=8, steps=30, seed=0,
         image.save(p)
         made.append(p)
         if logger:
-            logger.report_image(title="Cosmos", series="synthetic",
-                                iteration=i, local_path=p)
+            # Same reasoning as the ingest step: one grid, not eight rows.
+            logger.report_image(title="Cosmos", series="synthetic_%02d" % i,
+                                iteration=0, local_path=p)
         print("generated %d/%d -> %s" % (i + 1, int(num_images), p))
 
     ds = Dataset.create(dataset_name=dataset_name, dataset_project=project,
