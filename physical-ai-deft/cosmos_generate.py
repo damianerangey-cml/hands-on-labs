@@ -112,6 +112,23 @@ def main():
             torch.cuda.empty_cache()
             _offload()
 
+    # Diffusers resolves the compute device by walking pipeline components, and
+    # a non-Module component (the Cosmos safety checker) can make that lookup
+    # raise -- which surfaces as a confusing "no attribute _execution_device".
+    # Print what we actually have before generating; cheap, and it turns a
+    # library mystery into a fact.
+    import diffusers
+    print("diffusers", diffusers.__version__)
+    try:
+        for cname, comp in pipe.components.items():
+            print("  component %-16s %-34s module=%s" % (
+                cname, type(comp).__name__, isinstance(comp, torch.nn.Module)))
+        print("  exclude_from_cpu_offload:", getattr(pipe, "_exclude_from_cpu_offload", "<missing>"))
+        print("  offload_seq:", getattr(pipe, "model_cpu_offload_seq", "<missing>"))
+        print("  _execution_device:", pipe._execution_device)
+    except Exception as exc:
+        print("  component introspection failed: %s: %s" % (type(exc).__name__, exc))
+
     generator = torch.Generator(device="cpu").manual_seed(int(hp["seed"]))
     out_dir = "cosmos_out"
     os.makedirs(out_dir, exist_ok=True)
