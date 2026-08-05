@@ -132,10 +132,20 @@ def inspect_pcb(dataset_id, project="Physical AI Inspection"):
 
     if task and counts:
         logger = task.get_logger()
-        # A plain bar of "how thin is each class" -- the gap the generator fills.
-        for i, (k, v) in enumerate(sorted(counts.items())):
-            logger.report_scalar(title="real examples per class",
-                                 series=k, value=v, iteration=0)
+        # A BAR CHART, not scalars. A scalar reported once renders as a lone dot
+        # on a time axis, which says nothing -- and the entire point of this step
+        # is to make "8 real examples vs 62" legible at a glance.
+        labels = sorted(counts)
+        logger.report_histogram(
+            title="real examples per defect class", series="count",
+            values=[counts[k] for k in labels], xlabels=labels, iteration=0,
+            xaxis="texture / defect", yaxis="real images")
+        # Same numbers as a table, because a reader who wants the exact figure
+        # should not have to hover a bar to get it.
+        logger.report_table(
+            title="real examples per defect class", series="counts", iteration=0,
+            table_plot=[["texture / defect", "real images"]]
+                       + [[k, counts[k]] for k in labels])
         task.upload_artifact("class_counts", dict(counts))
     return {"counts": dict(counts), "defect_types": [s.get("defect_type") for s in specs]}
 
