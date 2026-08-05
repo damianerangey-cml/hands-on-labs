@@ -1,6 +1,6 @@
 """The Physical AI Data Factory, as a ClearML pipeline over a HyperDataset.
 
-    register  ->  read the gap  ->  Cosmos generates  ->  publish a new version
+    register -> read the gap -> Cosmos generates -> score -> publish a version
 
 Every stage is a tracked task. The thing they pass between them is not a folder
 of images -- it is a HYPERDATASET, and each pass reads the latest published
@@ -27,16 +27,16 @@ contain the defect it was asked for. If those were published under the defect's
 own label, the next pass would count them, conclude the gap was closed, and
 move on -- and the training branch would train on them.
 
-So a generated frame is published under the label `pending-review`, NOT under
-its intended class. It becomes `solder_bridge` only once something has looked
-at it and agreed. That keeps the cheap count honest: `stats()['labels']` shows
-what is actually confirmed, and `pending-review` shows the backlog waiting on
-the evaluator. The evaluator (Cosmos Reason, served as a NIM -- see the lab
-guide, in build) is what re-labels them.
+So a generated frame only earns its class label once something has looked at
+it and agreed. The `score` stage brings up Cosmos Reason as a NIM, asks it of
+every frame "does this really show a solder bridge?", publishes what passes
+under the real class, and drops what does not. That keeps the cheap count
+honest: `stats()['labels']` counts confirmed examples, so the gap closes when
+the data actually improves and not merely when the generator ran.
 
-Until that stage exists, generated frames sit at `pending-review` and the gap
-does not close. That is the correct behaviour, not a limitation: the loop
-declining to believe its own output is the property we want.
+With the evaluator disabled, frames are published under `pending-review`
+instead of their intended class -- visible and versioned, but counting toward
+nothing. The loop declining to believe its own output is the property we want.
 
 Data source: nvidia/Cosmos-AnomalyGen-PCB-Dataset (public, ungated).
 """
@@ -266,22 +266,99 @@ def generate_for_gap(gap_report, num_images=8, steps=30, seed=0):
 
 
 # --------------------------------------------------------------------------
-# step 5 -- publish the generated frames as the next version
+# step 5 -- the evaluator: bring up a NIM, score the batch, put it away
 # --------------------------------------------------------------------------
-def publish_generated(hyperdataset_id, gap_report, generated,
+def score_generated(generated, min_confidence=0.6):
+    """Score every generated frame with Cosmos Reason, served as a NIM.
+
+    The NIM is launched BY THIS STAGE and stopped before it returns. Nobody
+    starts a model server ahead of the run; a loop that needs one already up is
+    not autonomous, and a served NIM holds a whole GPU for as long as it exists
+    while this stage needs it for the length of one batch.
+
+    A frame passes only on an explicit positive above `min_confidence`. Every
+    other outcome -- a negative, a low-confidence yes, an unparseable answer, an
+    HTTP error -- is a rejection. That asymmetry is the point of the stage: the
+    cost of wrongly rejecting a good synthetic image is one wasted GPU-minute,
+    and the cost of wrongly accepting a bad one is a training set that lies
+    about what it contains.
+    """
+    import nim
+    from clearml import Task
+
+    task = Task.current_task()
+    paths = (generated or {}).get("paths") or []
+    target_class = (generated or {}).get("target_class") or "defect"
+    if not paths:
+        print("nothing generated -- skipping the evaluator")
+        return {"accepted": [], "rejected": [], "verdicts": []}
+
+    instance = nim.launch(session_name="Cosmos Reason (evaluator)",
+                          max_idle_hours=1)
+    accepted, rejected, verdicts = [], [], []
+    try:
+        base_url = nim.wait_ready(instance)
+        print("evaluator serving at", base_url)
+        for path in paths:
+            v = nim.score_image(base_url, path, target_class)
+            keep = v["present"] and v["confidence"] >= float(min_confidence)
+            (accepted if keep else rejected).append(path)
+            v["path"], v["accepted"] = path, keep
+            verdicts.append(v)
+            print("  %-38s %s  conf=%.2f  %s"
+                  % (path.rsplit("/", 1)[-1], "PASS" if keep else "reject",
+                     v["confidence"], v["reason"][:60]))
+    finally:
+        # In the `finally` on purpose: a stage that raises mid-batch must still
+        # put the GPU back. The idle timeout set at launch is the backstop for
+        # the case where even this does not run.
+        nim.stop(instance)
+
+    print("=" * 66)
+    print("evaluator: %d accepted, %d rejected of %d"
+          % (len(accepted), len(rejected), len(paths)))
+    print("=" * 66)
+
+    if task:
+        task.get_logger().report_table(
+            title="evaluator verdicts", series=target_class, iteration=0,
+            table_plot=[["image", "verdict", "confidence", "reason"]]
+                       + [[v["path"].rsplit("/", 1)[-1],
+                           "accept" if v["accepted"] else "reject",
+                           round(v["confidence"], 2), v["reason"][:70]]
+                          for v in verdicts])
+        task.upload_artifact("verdicts", verdicts)
+
+    return {"accepted": accepted, "rejected": rejected, "verdicts": verdicts,
+            "target_class": target_class}
+
+
+# --------------------------------------------------------------------------
+# step 6 -- publish the generated frames as the next version
+# --------------------------------------------------------------------------
+def publish_generated(hyperdataset_id, gap_report, generated, scored=None,
                       version_name="v2-enriched"):
-    """A new published version = everything so far, plus what this pass made.
+    """A new published version = everything so far, plus what SURVIVED review.
 
     Parented on the version the gap was read from, so the new version is
     cumulative. Publishing only the new frames would produce a "latest version"
     containing nothing but synthetic images, and the training branch reads the
     latest version.
 
-    Generated frames land under `pending-review`, not under the class they were
-    generated FOR. See the module docstring: the label is a claim about what is
-    in the picture, and nothing has checked that yet.
+    Two modes, and the difference is what the label means.
+
+    With `scored` (the normal path): frames the evaluator accepted are published
+    under the real defect class and marked verified. Rejected frames are NOT
+    published at all -- they are not written under another label, they simply do
+    not enter the dataset. There is no value in versioning images we have
+    already decided are wrong, and every one that got in would need explaining
+    later.
+
+    Without `scored` (evaluator disabled): everything is published under
+    `pending-review` instead of its intended class, so it is visible and
+    versioned but does not count toward closing any gap. A label is a claim
+    about what is in the picture; unchecked, we do not get to make it.
     """
-    import os
     import hyperdataset as hd
     from clearml import Task
 
@@ -289,37 +366,48 @@ def publish_generated(hyperdataset_id, gap_report, generated,
     parent = (gap_report or {}).get("version_id")
     target_class = (generated or {}).get("target_class")
 
-    ds_id = hyperdataset_id
-    version_id = hd.create_draft(
-        ds_id, version_name, parent=parent,
-        comment="Cosmos generation for '%s', pending review" % target_class)
+    if scored is not None:
+        paths = list(scored.get("accepted") or [])
+        dropped = len(scored.get("rejected") or [])
+        labels, verified = [target_class], True
+        note = "%d accepted by the evaluator, %d rejected and dropped" % (
+            len(paths), dropped)
+    else:
+        paths = list((generated or {}).get("paths") or [])
+        dropped = 0
+        labels, verified = ["pending-review"], False
+        note = "evaluator not run -- %d frames held at pending-review" % len(paths)
 
+    version_id = hd.create_draft(
+        hyperdataset_id, version_name, parent=parent,
+        comment="Cosmos generation for '%s' -- %s" % (target_class, note))
     dest = hd.files_dest("pcb-synthetic", version_name)
 
     frames = []
-    for path in (generated or {}).get("paths") or []:
+    for path in paths:
         uri = hd.upload_image(path, dest)
         frames.append(hd.make_frame(
-            uri, labels=["pending-review"],
+            uri, labels=labels,
             meta=hd.frame_meta(origin="synthetic", defect=target_class,
-                               kind="anomaly", generator=(generated or {}).get("model"),
-                               parent_version=parent, verified=False,
+                               kind="anomaly",
+                               generator=(generated or {}).get("model"),
+                               parent_version=parent, verified=verified,
                                prompt=(generated or {}).get("prompt"))))
 
-    saved = hd.add_frames(version_id, frames)
+    saved = hd.add_frames(version_id, frames) if frames else 0
     hd.commit(version_id, publish=True)
 
     counts = hd.stats(version_id)["labels"]
     print("=" * 66)
-    print("published %s -- %d new frames, parented on %s" % (version_name, saved, parent))
+    print("published %s -- %d new frames, parented on %s"
+          % (version_name, saved, parent))
+    print(note)
     print("version now holds:")
     for k in sorted(counts):
         print("  %-34s %4d" % (k, counts[k]))
-    print()
-    print("The %d new frames are 'pending-review', NOT '%s'." % (saved, target_class))
-    print("They start counting toward the gap once the evaluator confirms them.")
     print("=" * 66)
-    return {"version_id": version_id, "version_name": version_name, "added": saved}
+    return {"version_id": version_id, "version_name": version_name,
+            "added": saved, "dropped": dropped}
 
 
 def _gpu_docker_args():
@@ -350,6 +438,8 @@ def main():
     pipe.add_parameter("steps", 30, description="diffusion steps per image")
     pipe.add_parameter("target_per_class", 60,
                        description="confirmed examples we want of every defect class")
+    pipe.add_parameter("min_confidence", 0.6,
+                       description="evaluator confidence a frame needs to be published")
 
     common = dict(repo=REPO, repo_branch=REPO_BRANCH, working_dir=WORKDIR)
 
@@ -382,11 +472,27 @@ def main():
             "python3 -m pip install -q --no-input " + " ".join(GPU_PACKAGES)),
         execution_queue=GPU_QUEUE, **common)
 
+    # The evaluator runs on the CPU queue even though what it uses is a GPU.
+    # This stage does not compute anything itself -- it asks the apps API to
+    # launch a NIM, waits, sends images to it over HTTP, and stops it. Putting
+    # it on the GPU queue would have it occupy a card just to sit in a poll
+    # loop, while the NIM it launched waits behind it for the card it is
+    # holding. That deadlocks a single-GPU pool and wastes one on a two-GPU
+    # pool.
+    pipe.add_function_step(
+        name="score", function=score_generated,
+        function_kwargs={"generated": "${generate.generated}",
+                         "min_confidence": "${pipeline.min_confidence}"},
+        function_return=["scored"],
+        packages=CPU_PACKAGES + ["requests"],
+        execution_queue=CPU_QUEUE, **common)
+
     pipe.add_function_step(
         name="publish", function=publish_generated,
         function_kwargs={"hyperdataset_id": "${register.hyperdataset_id}",
                          "gap_report": "${read_the_gap.gap_report}",
-                         "generated": "${generate.generated}"},
+                         "generated": "${generate.generated}",
+                         "scored": "${score.scored}"},
         function_return=["published"],
         packages=CPU_PACKAGES, execution_queue=CPU_QUEUE, **common)
 
