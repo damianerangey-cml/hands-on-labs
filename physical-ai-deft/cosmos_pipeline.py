@@ -270,7 +270,16 @@ def main():
         function_return=["trainset_id"],
         packages=CPU_PACKAGES, execution_queue=CPU_QUEUE)
 
-    pipe.start(queue=CPU_QUEUE)
+    # start()      -- controller itself runs on the cluster (production shape;
+    #                 needs HF_TOKEN present in the pod, i.e. from a Secret).
+    # start_locally -- controller runs here, steps still dispatch to the queues.
+    #                 Use this when you are driving from a laptop and the token
+    #                 only exists in your shell.
+    import os
+    if os.environ.get("DEFT_LOCAL_CONTROLLER"):
+        pipe.start_locally(run_pipeline_steps_locally=False)
+    else:
+        pipe.start(queue=CPU_QUEUE)
     print("pipeline started -- watch the DAG in the WebApp")
 
 
