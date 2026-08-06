@@ -32,21 +32,14 @@ can occur -- the frames the HyperDataset's next published version is built from.
 # a script it runs remotely, which pushes it below the first statement and makes
 # it a SyntaxError. The image is Python 3.12, so it is not needed anyway.
 import os
-import subprocess
 import sys
 
-REPO_ROOT = "/workspace/paidf-anomalygen"
-CACHE = os.environ.get("DEFT_CACHE", "/cache")
+from ag_common import CACHE, REPO_ROOT, link_checkpoints, run as _run
+
 
 # The step baked into NVIDIA's released PCB checkpoint (iter_000014000.pt).
 RELEASED_STEP = 14000
 
-
-def _run(cmd, cwd=REPO_ROOT, env=None):
-    print("+ " + " ".join(cmd), flush=True)
-    p = subprocess.run(cmd, cwd=cwd, env={**os.environ, **(env or {})})
-    if p.returncode != 0:
-        raise SystemExit("step failed (%d): %s" % (p.returncode, " ".join(cmd)))
 
 
 def anomalygen_generate(dataset_name="pcb-uc1",
@@ -70,18 +63,7 @@ def anomalygen_generate(dataset_name="pcb-uc1",
     ckpt_dir = os.path.join(CACHE, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
 
-    # Same relative-path reason as the fine-tune: the config refers to
-    # checkpoints/... so the repo's dir has to BE the cache.
-    link = os.path.join(REPO_ROOT, "checkpoints")
-    if os.path.islink(link):
-        os.unlink(link)
-    elif os.path.isdir(link):
-        for e in os.listdir(link):
-            src, dst = os.path.join(link, e), os.path.join(ckpt_dir, e)
-            if not os.path.exists(dst):
-                os.replace(src, dst)
-        os.rmdir(link)
-    os.symlink(ckpt_dir, link)
+    link_checkpoints()
 
     # ---- base checkpoints + NVIDIA's trained PCB adapter ----------------
     print("=" * 66 + "\nCHECKPOINTS\n" + "=" * 66, flush=True)

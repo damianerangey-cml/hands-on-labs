@@ -27,18 +27,9 @@ between a dataset that grew and a dataset that improved.
 import csv
 import os
 import statistics
-import subprocess
 import sys
 
-REPO_ROOT = "/workspace/paidf-anomalygen"
-CACHE = os.environ.get("DEFT_CACHE", "/cache")
-
-
-def _run(cmd, cwd=REPO_ROOT, env=None):
-    print("+ " + " ".join(cmd), flush=True)
-    p = subprocess.run(cmd, cwd=cwd, env={**os.environ, **(env or {})})
-    if p.returncode != 0:
-        raise SystemExit("step failed (%d): %s" % (p.returncode, " ".join(cmd)))
+from ag_common import CACHE, link_checkpoints, run as _run
 
 
 def anomalygen_evaluate(dataset_name="pcb-uc1",
@@ -50,6 +41,10 @@ def anomalygen_evaluate(dataset_name="pcb-uc1",
     from clearml import Task
 
     task = Task.current_task()
+    # The evaluator loads its feature backbone by RELATIVE path
+    # (checkpoints/nvidia/C-RADIO-V3/model.safetensors), so the cache has to be
+    # linked in even though this stage downloads nothing.
+    link_checkpoints()
     dataset_dir = os.path.join(CACHE, "datasets", dataset_name)
     generated = os.path.join(CACHE, "results", dataset_name, "original")
     per_sample = os.path.join(generated, "per_sample.csv")

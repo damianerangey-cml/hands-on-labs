@@ -53,27 +53,14 @@ mounted cache).
 # `dict | None` is native. The sibling modules keep theirs because they are
 # imported, not executed as the task script; only the entry point is patched.
 import os
-import subprocess
 import sys
 
-REPO_ROOT = "/workspace/paidf-anomalygen"
-CACHE = os.environ.get("DEFT_CACHE", "/cache")
+from ag_common import CACHE, REPO_ROOT, link_checkpoints, run as _run
+
 IMAGE = "nvcr.io/nvidia/paidf-anomalygen:1.0.1"
 
 HF_DATASET = "nvidia/Cosmos-AnomalyGen-PCB-Dataset"
 
-
-def _run(cmd: list[str], cwd: str = REPO_ROOT, env: dict | None = None) -> None:
-    """Run a step, streaming its output, and fail the task if it fails.
-
-    Streamed rather than captured on purpose: a fine-tune is long enough that a
-    silent task with a wall of output at the end is useless to watch, and the
-    ClearML console is the thing a reader of the lab guide is looking at.
-    """
-    print("+ " + " ".join(cmd), flush=True)
-    p = subprocess.run(cmd, cwd=cwd, env={**os.environ, **(env or {})})
-    if p.returncode != 0:
-        raise SystemExit("step failed (%d): %s" % (p.returncode, " ".join(cmd)))
 
 
 def _count_masks(dataset_dir: str) -> int:
@@ -125,19 +112,7 @@ def anomalygen_finetune(dataset_name="pcb-uc1",
     ckpt_dir = os.path.join(CACHE, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)
 
-    # The generated config references checkpoints RELATIVELY, so the repo's own
-    # `checkpoints/` has to BE the cache, not merely know where it is.
-    link = os.path.join(REPO_ROOT, "checkpoints")
-    if os.path.islink(link):
-        os.unlink(link)
-    elif os.path.isdir(link):
-        for entry in os.listdir(link):
-            src, dst = os.path.join(link, entry), os.path.join(ckpt_dir, entry)
-            if not os.path.exists(dst):
-                os.replace(src, dst)
-        os.rmdir(link)
-    os.symlink(ckpt_dir, link)
-    print("checkpoints/ -> %s" % ckpt_dir, flush=True)
+    link_checkpoints()
 
     size_up = model_size.upper()
 
