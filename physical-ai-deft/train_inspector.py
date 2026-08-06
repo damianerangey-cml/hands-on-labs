@@ -23,6 +23,32 @@ If the answer is "the extra data helped", TAO is where you go next. If it is
 "it did not", you have learned that for the price of a coffee instead of an
 afternoon.
 
+WHAT THIS MEASUREMENT CAN AND CANNOT SHOW -- READ BEFORE QUOTING A NUMBER
+--------------------------------------------------------------------------
+Measured on NVIDIA's 86-image demo set, baseline plus three rounds:
+
+    round 0  baseline, 63 real, 0 synthetic     0.964   (27/28)
+    round 1  +48 synthetic                      0.929   (26/28)
+    round 2  +60 synthetic                      0.929   (26/28)
+    round 3  +72 synthetic                      0.929   (26/28)
+
+Do not read that as "synthetic data made it worse". The holdout is 28 real
+images, so accuracy moves in steps of 3.6% and the entire gap to baseline is ONE
+image. It is then perfectly flat while the synthetic count goes 48 -> 60 -> 72,
+which is what an insensitive instrument looks like, not a dose-response.
+
+The deeper limit is the rare class. `bridge` has 8 real examples in the whole
+dataset, so about 2 land in the holdout -- the class this lab is entirely about
+cannot be measured at all here. NVIDIA ship these 86 images to demonstrate
+GENERATION, and they do that well; they are not enough to demonstrate an
+outcome.
+
+So this stage honestly shows the pipeline produces a model, with lineage, that
+performs sensibly. It does not show that the generated data improved it. On a
+customer dataset with hundreds of real examples per class the same code answers
+the question properly -- that is the experiment worth running, and it is not
+this one.
+
 LINEAGE
 -------
 The model is registered with the dataset VERSION ID it trained on, plus the
