@@ -150,7 +150,9 @@ def run_rounds(rounds=3,
 
 
 if __name__ == "__main__":
-    n = 3
+    # DEFT_ROUNDS is how `launch.py` passes the count -- an env var lands on the
+    # task record where a reader can see it, and needs no private API to set.
+    n = int(os.environ.get("DEFT_ROUNDS") or 3)
     if "--rounds" in sys.argv:
         n = int(sys.argv[sys.argv.index("--rounds") + 1])
     run_rounds(rounds=n)
