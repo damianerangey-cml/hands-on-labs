@@ -108,6 +108,7 @@ def anomalygen_finetune(dataset_name="pcb-uc1",
                         model_size="2b",
                         num_gpus=1,
                         max_iter=2000,
+                        batch_size=1,
                         ):
     """Phase 0 + phase 1. Returns the trained checkpoint directory."""
     from clearml import Task
@@ -194,6 +195,20 @@ def anomalygen_finetune(dataset_name="pcb-uc1",
           "--validation-jsonl", val_jsonl,
           "--model-size", model_size,
           "--max-iter", str(max_iter),
+          # BATCH SIZE 1, NOT NVIDIA'S DEFAULT OF 2.
+          #
+          # Measured: the 2B backbone at 512x512 with bs=2 does not fit a 22GiB
+          # A10G. It asked for another 4.54 GiB with 659 MiB free --
+          #
+          #   torch.OutOfMemoryError: CUDA out of memory. Tried to allocate
+          #   4.54 GiB. GPU 0 has a total capacity of 22.06 GiB of which
+          #   659.38 MiB is free.
+          #
+          # This is the concrete number behind wanting an L40S: on 48GB the
+          # documented default just runs. Until then bs=1 is the honest
+          # adjustment -- it is NVIDIA's own flag, not a patch to their code,
+          # and it changes optimisation dynamics rather than the method.
+          "--batch-size", str(batch_size),
           "--output", ag_config])
     if os.path.exists(ag_config):
         print("---- generated config ----", flush=True)
@@ -207,7 +222,11 @@ def anomalygen_finetune(dataset_name="pcb-uc1",
           "--ag-config", ag_config,
           "--num-gpus", str(num_gpus),
           "--model-size", model_size],
-         env={"IMAGINAIRE_OUTPUT_ROOT": os.path.join(CACHE, "results")})
+         env={"IMAGINAIRE_OUTPUT_ROOT": os.path.join(CACHE, "results"),
+              # The OOM above reported 3.33 GiB "reserved but unallocated" --
+              # fragmentation, not genuine demand. expandable_segments is
+              # PyTorch's own remedy, recommended in the error text itself.
+              "PYTORCH_ALLOC_CONF": "expandable_segments:True"})
 
     out_root = os.path.join(CACHE, "results", "anomaly_gen", dataset_name)
     trained = None
