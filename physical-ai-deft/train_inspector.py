@@ -122,7 +122,8 @@ def _collect(dataset_dir, results_dirs, accepted_only=True, nn_threshold=None):
 def train_inspector(hyperdataset_name="PCB Inspection",
                     dataset_name="pcb-uc1",
                     round_name=None,
-                    accepted_only=True):
+                    accepted_only=True,
+                    use_synthetic=True):
     """Train on the latest published version and register the model."""
     import numpy as np
     import torch
@@ -200,7 +201,14 @@ def train_inspector(hyperdataset_name="PCB Inspection",
         Xr_tr, Xte, yr_tr, yte = train_test_split(
             Xr, yr, test_size=0.3, random_state=0)
 
-    # Train on the real training half PLUS every accepted synthetic frame.
+    # Train on the real training half PLUS every accepted synthetic frame --
+    # unless this is the BASELINE run, which is the control the whole claim
+    # rests on. Without a zero-synthetic number on the same fixed holdout, an
+    # accuracy of 0.93 has nothing to be compared against and "the generated
+    # data helped" is unfalsifiable.
+    if not use_synthetic:
+        syn_idx = np.array([], dtype=int)
+        print("  BASELINE: real training images only, no synthetic", flush=True)
     Xtr = np.concatenate([Xr_tr, X[syn_idx]]) if len(syn_idx) else Xr_tr
     ytr = np.concatenate([yr_tr, y[syn_idx]]) if len(syn_idx) else yr_tr
     print("  train: %d (%d real + %d synthetic) | held-out: %d REAL only"
@@ -251,7 +259,7 @@ def train_inspector(hyperdataset_name="PCB Inspection",
         om.update_weights(weights_filename=model_path, auto_delete_file=False)
         task.upload_artifact("classification_report", report)
 
-    return {"model": name, "accuracy": acc,
+    return {"model": name, "accuracy": acc, "held_out_real": int(len(yte)),
             "version_id": version["id"], "version_name": version.get("name"),
             "training_images": len(items), "synthetic_accepted": n_syn}
 

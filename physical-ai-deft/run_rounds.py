@@ -51,6 +51,22 @@ def run_rounds(rounds=3,
     ds_id = hd.get_or_create_dataset(hyperdataset_name)
     history = []
 
+    # ROUND 0: the control. Same fixed real-only holdout, same real training
+    # images, no synthetic at all. Every later round is measured against this
+    # one number, and without it "the generated data helped" cannot be tested.
+    print("\n" + "#" * 66, flush=True)
+    print("# ROUND 0 -- BASELINE (no synthetic data)", flush=True)
+    print("#" * 66, flush=True)
+    base = tr.train_inspector(hyperdataset_name=hyperdataset_name,
+                              dataset_name=dataset_name,
+                              round_name="inspector-baseline",
+                              use_synthetic=False)
+    print("baseline accuracy %.3f on %d real held-out images"
+          % (base.get("accuracy") or 0, base.get("held_out_real") or 0), flush=True)
+    history.append({"round": 0, "version": "baseline (real only)",
+                    "published": 0, "verified": 0,
+                    "accuracy": base.get("accuracy"), "gap_after": {}})
+
     for r in range(1, int(rounds) + 1):
         print("\n" + "#" * 66, flush=True)
         print("# ROUND %d of %d" % (r, rounds), flush=True)
