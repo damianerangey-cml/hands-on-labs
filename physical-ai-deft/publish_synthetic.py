@@ -56,7 +56,7 @@ def _nn_scores(results):
 
 def publish_synthetic(hyperdataset_name="PCB Inspection",
                       dataset_name="pcb-uc1",
-                      version_name="v2-anomalygen",
+                      version_name=None,
                       target_per_class=60,
                       nn_threshold=None):
     """Publish the generated frames, parented on the latest published version."""
@@ -83,6 +83,10 @@ def publish_synthetic(hyperdataset_name="PCB Inspection",
     for k, v in sorted(before.items(), key=lambda kv: -kv[1]):
         print("  %-24s %4d" % (k, v), flush=True)
 
+    # Derived, not constant: this runs once per enrichment round.
+    if not version_name:
+        version_name = "%s-anomalygen" % hd.next_version_name(ds_id)
+    print("publishing as", version_name, flush=True)
     version_id = hd.create_draft(
         ds_id, version_name, parent=parent["id"],
         comment="NVIDIA AnomalyGen, mask-conditioned on the board's CAD")

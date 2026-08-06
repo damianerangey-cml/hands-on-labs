@@ -157,6 +157,30 @@ def get_or_create_dataset(name: str, tags: list[str] | None = None) -> str:
     return ds_id
 
 
+def next_version_name(dataset_id: str, prefix: str = "v") -> str:
+    """The next free `<prefix><N>-<suffix>`-style name for this dataset.
+
+    A loop that runs repeatedly cannot use a constant version name -- the
+    apiserver rejects a duplicate outright:
+
+      A dataset version with the provided name already exists:
+      dataset=..., name=v2-anomalygen
+
+    which fails the pass AFTER generation has already spent the GPU. Numbering
+    from what is already there means the Nth enrichment round names itself, and
+    the version list reads as a history rather than a collision.
+    """
+    import re as _re
+    out = _call("get_versions", {"dataset": dataset_id, "page": 0,
+                                 "page_size": 500})
+    highest = 0
+    for v in out.get("versions") or []:
+        m = _re.match(r"^v(\d+)", str(v.get("name") or ""))
+        if m:
+            highest = max(highest, int(m.group(1)))
+    return "%s%d" % (prefix, highest + 1)
+
+
 def create_draft(dataset_id: str, version_name: str,
                  parent: str | None = None,
                  comment: str | None = None) -> str:
