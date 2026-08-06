@@ -34,11 +34,31 @@ import sys
 CACHE = os.environ.get("DEFT_CACHE", "/cache")
 
 
+def _nn_scores(results):
+    """{basename: nn_score} from phase 4, or {} if it has not run.
+
+    Per-frame rather than a blanket flag: phase 4's whole point is that some
+    generated frames are good and some are not, and it says which.
+    """
+    import csv as _csv
+    path = os.path.join(results, "per_sample.csv")
+    if not os.path.exists(path):
+        return {}
+    out = {}
+    with open(path, newline="") as fh:
+        for r in _csv.DictReader(fh):
+            try:
+                out[os.path.basename(r.get("path") or "")] = float(r["nn_score"])
+            except (KeyError, TypeError, ValueError):
+                continue
+    return out
+
+
 def publish_synthetic(hyperdataset_name="PCB Inspection",
                       dataset_name="pcb-uc1",
                       version_name="v2-anomalygen",
                       target_per_class=60,
-                      verified=False):
+                      nn_threshold=None):
     """Publish the generated frames, parented on the latest published version."""
     import hyperdataset as hd
     from clearml import Task
@@ -68,7 +88,18 @@ def publish_synthetic(hyperdataset_name="PCB Inspection",
         comment="NVIDIA AnomalyGen, mask-conditioned on the board's CAD")
     dest = hd.files_dest("pcb-synthetic", version_name)
 
-    frames, skipped = [], 0
+    scores = _nn_scores(results)
+    if scores and nn_threshold is None:
+        import statistics
+        nn_threshold = statistics.median(scores.values())
+    if scores:
+        print("phase 4 scores present for %d frame(s); threshold %.3f"
+              % (len(scores), nn_threshold), flush=True)
+    else:
+        print("no per_sample.csv -- phase 4 has not run, so every frame "
+              "publishes as pending-review", flush=True)
+
+    frames, skipped, accepted = [], 0, 0
     with open(csv_path, newline="") as fh:
         for row in csv.DictReader(fh):
             path = row.get("output_filename") or ""
@@ -83,6 +114,14 @@ def publish_synthetic(hyperdataset_name="PCB Inspection",
 
             defect = (row.get("anomaly_type") or "").split("+")[-1] or "unknown"
             texture = (row.get("anomaly_type") or "").split("+")[0] or None
+
+            # THE LABEL IS EARNED, PER FRAME. A frame gets its real defect class
+            # only if phase 4 scored it at or above the threshold; otherwise it
+            # publishes as pending-review and counts toward closing nothing.
+            nn = scores.get(os.path.basename(path))
+            verified = nn is not None and nn >= nn_threshold
+            accepted += 1 if verified else 0
+
             uri = hd.upload_image(path, dest)
             frames.append(hd.make_frame(
                 uri,
@@ -91,6 +130,7 @@ def publish_synthetic(hyperdataset_name="PCB Inspection",
                     origin="synthetic", texture=texture, defect=defect,
                     kind="anomaly", generator="Cosmos-AnomalyGen-PCB-2B",
                     parent_version=parent["id"], verified=bool(verified),
+                    nn_score=nn,
                     # Straight from NVIDIA's own record -- this is what makes a
                     # generated frame auditable rather than merely present.
                     clean_source=os.path.basename(row.get("image_filename") or ""),
@@ -106,8 +146,8 @@ def publish_synthetic(hyperdataset_name="PCB Inspection",
     after = hd.stats(version_id)["labels"]
 
     print("=" * 66, flush=True)
-    print("AFTER   (%s)  -- %d published, %d skipped" % (version_name, saved, skipped),
-          flush=True)
+    print("AFTER   (%s)  -- %d published (%d verified), %d skipped"
+          % (version_name, saved, accepted, skipped), flush=True)
     for k, v in sorted(after.items(), key=lambda kv: -kv[1]):
         delta = v - before.get(k, 0)
         print("  %-24s %4d %s" % (k, v, ("(+%d)" % delta) if delta else ""), flush=True)
@@ -140,4 +180,7 @@ def publish_synthetic(hyperdataset_name="PCB Inspection",
 
 
 if __name__ == "__main__":
-    publish_synthetic(verified=("--verified" in sys.argv))
+    thr = None
+    if "--nn-threshold" in sys.argv:
+        thr = float(sys.argv[sys.argv.index("--nn-threshold") + 1])
+    publish_synthetic(nn_threshold=thr)
