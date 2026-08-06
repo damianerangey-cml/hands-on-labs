@@ -37,7 +37,25 @@ import os
 from ag_common import CACHE
 
 
-def _collect(dataset_dir, results_dir, accepted_only=True, nn_threshold=None):
+def _run_dirs(dataset_name):
+    """Every per-round generation directory, oldest first.
+
+    Training must accumulate. Round 3 should see round 1's and round 2's
+    accepted frames as well as its own -- otherwise every round trains on the
+    same amount of data and the accuracy comparison the loop exists to produce
+    says nothing. That is not hypothetical: the first three-round run scored
+    0.968 three times because each round trained on the same 103 images.
+    """
+    import os as _os
+    root = _os.path.join(CACHE, "results", dataset_name, "runs")
+    if not _os.path.isdir(root):
+        legacy = _os.path.join(CACHE, "results", dataset_name, "original")
+        return [legacy] if _os.path.isdir(legacy) else []
+    return sorted((_os.path.join(root, d) for d in _os.listdir(root)),
+                  key=lambda q: _os.path.getmtime(q))
+
+
+def _collect(dataset_dir, results_dirs, accepted_only=True, nn_threshold=None):
     """Build (path, label) pairs: the real images, plus synthetic that passed.
 
     Mirrors what the HyperDataset version considers real training data --
@@ -64,32 +82,41 @@ def _collect(dataset_dir, results_dir, accepted_only=True, nn_threshold=None):
                 if f.lower().endswith((".png", ".jpg", ".jpeg")):
                     items.append((os.path.join(cdir, f), "clean", "real"))
 
-    per_sample = os.path.join(results_dir, "per_sample.csv")
-    scores = {}
-    if os.path.exists(per_sample):
-        with open(per_sample, newline="") as fh:
-            for r in csv.DictReader(fh):
-                try:
-                    scores[os.path.basename(r["path"])] = float(r["nn_score"])
-                except (KeyError, TypeError, ValueError):
-                    continue
-    if scores and nn_threshold is None:
-        import statistics
-        nn_threshold = statistics.median(scores.values())
+    # Scores are per RUN -- the same basename appears in several rounds as
+    # different images, so a run's scores must be read alongside its own CSV.
+    thresholds = []
+    for results_dir in results_dirs:
+        scores = {}
+        per_sample = os.path.join(results_dir, "per_sample.csv")
+        if os.path.exists(per_sample):
+            with open(per_sample, newline="") as fh:
+                for r in csv.DictReader(fh):
+                    try:
+                        scores[os.path.basename(r["path"])] = float(r["nn_score"])
+                    except (KeyError, TypeError, ValueError):
+                        continue
+        thr = nn_threshold
+        if scores and thr is None:
+            import statistics
+            thr = statistics.median(scores.values())
+        if thr is not None:
+            thresholds.append(thr)
 
-    sdg = os.path.join(results_dir, "SDG_result.csv")
-    if os.path.exists(sdg):
+        sdg = os.path.join(results_dir, "SDG_result.csv")
+        if not os.path.exists(sdg):
+            continue
         with open(sdg, newline="") as fh:
             for r in csv.DictReader(fh):
                 p = r.get("output_filename") or ""
                 if not p or not os.path.exists(p):
                     continue
                 nn = scores.get(os.path.basename(p))
-                if accepted_only and not (nn is not None and nn >= nn_threshold):
+                if accepted_only and not (nn is not None and thr is not None
+                                          and nn >= thr):
                     continue
                 cls = (r.get("anomaly_type") or "").split("+")[-1] or "unknown"
                 items.append((p, cls, "synthetic"))
-    return items, nn_threshold
+    return items, (sum(thresholds) / len(thresholds) if thresholds else None)
 
 
 def train_inspector(hyperdataset_name="PCB Inspection",
@@ -110,7 +137,7 @@ def train_inspector(hyperdataset_name="PCB Inspection",
 
     task = Task.current_task()
     dataset_dir = os.path.join(CACHE, "datasets", dataset_name)
-    results_dir = os.path.join(CACHE, "results", dataset_name, "original")
+    results_dirs = _run_dirs(dataset_name)
 
     ds_id = hd.get_or_create_dataset(hyperdataset_name)
     version = hd.latest_published(ds_id)
@@ -120,7 +147,8 @@ def train_inspector(hyperdataset_name="PCB Inspection",
     print("training against %s (%s)" % (version.get("name"), version["id"]), flush=True)
     print("  version holds:", counts, flush=True)
 
-    items, thr = _collect(dataset_dir, results_dir, accepted_only)
+    items, thr = _collect(dataset_dir, results_dirs, accepted_only)
+    print("  accumulating over %d generation run(s)" % len(results_dirs), flush=True)
     if len(items) < 10:
         raise SystemExit("only %d training images -- nothing to learn from" % len(items))
     n_syn = sum(1 for _, _, o in items if o == "synthetic")

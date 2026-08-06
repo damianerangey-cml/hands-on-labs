@@ -32,11 +32,24 @@ import sys
 from ag_common import CACHE, link_checkpoints, run as _run
 
 
+def _latest_run(dataset_name):
+    """The most recent per-run output directory."""
+    root = os.path.join(CACHE, "results", dataset_name, "runs")
+    if not os.path.isdir(root):
+        raise SystemExit("no generation runs under %s" % root)
+    runs = sorted((os.path.join(root, d) for d in os.listdir(root)),
+                  key=lambda p: os.path.getmtime(p))
+    if not runs:
+        raise SystemExit("no generation runs under %s" % root)
+    return runs[-1]
+
+
 def anomalygen_evaluate(dataset_name="pcb-uc1",
                         anomaly_types=("IC+bridge",
                                        "passive_component+excess_solder",
                                        "passive_component+missing"),
-                        nn_threshold=None):
+                        nn_threshold=None,
+                        run_dir=None):
     """Run NVIDIA's eval and turn per-sample nn_score into accept/reject."""
     from clearml import Task
 
@@ -46,7 +59,7 @@ def anomalygen_evaluate(dataset_name="pcb-uc1",
     # linked in even though this stage downloads nothing.
     link_checkpoints()
     dataset_dir = os.path.join(CACHE, "datasets", dataset_name)
-    generated = os.path.join(CACHE, "results", dataset_name, "original")
+    generated = run_dir or _latest_run(dataset_name)
     per_sample = os.path.join(generated, "per_sample.csv")
 
     for p, what in ((dataset_dir, "dataset"), (generated, "generated output")):

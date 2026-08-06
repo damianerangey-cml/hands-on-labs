@@ -68,13 +68,17 @@ def run_rounds(rounds=3,
 
         # A different seed per round, or every round regenerates the same
         # images and the duplicate guard correctly drops all of them.
+        run_id = "round%d" % r
         g = gen.anomalygen_generate(dataset_name=dataset_name,
                                     num_sdg=num_sdg,
-                                    seed=seed_base + r)
-        ev.anomalygen_evaluate(dataset_name=dataset_name)
+                                    seed=seed_base + r,
+                                    run_id=run_id)
+        run_dir = g["output_dir"]
+        ev.anomalygen_evaluate(dataset_name=dataset_name, run_dir=run_dir)
         p = pub.publish_synthetic(hyperdataset_name=hyperdataset_name,
                                   dataset_name=dataset_name,
-                                  target_per_class=target_per_class)
+                                  target_per_class=target_per_class,
+                                  run_dir=run_dir)
         if not p.get("published"):
             print("round %d published nothing -- stopping early" % r, flush=True)
             break

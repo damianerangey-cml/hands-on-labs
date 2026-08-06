@@ -34,6 +34,17 @@ import sys
 CACHE = os.environ.get("DEFT_CACHE", "/cache")
 
 
+def _latest_run(dataset_name):
+    root = os.path.join(CACHE, "results", dataset_name, "runs")
+    if not os.path.isdir(root):
+        raise SystemExit("no generation runs under %s" % root)
+    runs = sorted((os.path.join(root, d) for d in os.listdir(root)),
+                  key=lambda p: os.path.getmtime(p))
+    if not runs:
+        raise SystemExit("no generation runs under %s" % root)
+    return runs[-1]
+
+
 def _nn_scores(results):
     """{basename: nn_score} from phase 4, or {} if it has not run.
 
@@ -58,13 +69,14 @@ def publish_synthetic(hyperdataset_name="PCB Inspection",
                       dataset_name="pcb-uc1",
                       version_name=None,
                       target_per_class=60,
-                      nn_threshold=None):
+                      nn_threshold=None,
+                      run_dir=None):
     """Publish the generated frames, parented on the latest published version."""
     import hyperdataset as hd
     from clearml import Task
 
     task = Task.current_task()
-    results = os.path.join(CACHE, "results", dataset_name, "original")
+    results = run_dir or _latest_run(dataset_name)
     csv_path = os.path.join(results, "SDG_result.csv")
     if not os.path.exists(csv_path):
         raise SystemExit("no SDG_result.csv under %s -- run generation first"

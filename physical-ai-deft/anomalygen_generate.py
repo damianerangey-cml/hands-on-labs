@@ -46,7 +46,8 @@ def anomalygen_generate(dataset_name="pcb-uc1",
                         num_sdg=24,
                         model_size="2b",
                         seed=0,
-                        step=RELEASED_STEP):
+                        step=RELEASED_STEP,
+                        run_id=None):
     """Fetch NVIDIA's trained adapter, place masks, and generate.
 
     `num_sdg` is how many synthetic images to produce. In the agentic loop this
@@ -138,7 +139,17 @@ def anomalygen_generate(dataset_name="pcb-uc1",
 
     # ---- phase 3: generation --------------------------------------------
     print("=" * 66 + "\nPHASE 3 -- SDG generation\n" + "=" * 66, flush=True)
-    out_dir = os.path.join(CACHE, "results", dataset_name, "original")
+    # PER-RUN, NOT ONE SHARED DIRECTORY.
+    #
+    # Generated filenames are deterministic (<anomaly_type>_<NNNNN>.png), so a
+    # second round writing into the same directory OVERWRITES the first round's
+    # images. Nothing errors -- but training then sees only the newest 24 frames
+    # however many rounds have run, so round 3 trains on exactly as much data as
+    # round 1 and the accuracy comparison the loop exists to produce is
+    # meaningless. Observed: rounds 1 and 2 both trained on 103 images and both
+    # scored 0.968.
+    out_dir = os.path.join(CACHE, "results", dataset_name, "runs",
+                           run_id or ("seed%d" % seed))
     _run(["bash", "scripts/utilities/run_sdg.sh",
           "--checkpoint_dir", ag_ckpt,
           "--step", str(step),
