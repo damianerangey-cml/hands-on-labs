@@ -48,6 +48,8 @@ def run_rounds(rounds=3,
     import hyperdataset as hd
 
     task = Task.current_task()
+    invocation = (task.id[:8] if task else "local")
+    print("invocation id: %s" % invocation, flush=True)
     ds_id = hd.get_or_create_dataset(hyperdataset_name)
     history = []
 
@@ -82,9 +84,19 @@ def run_rounds(rounds=3,
             print("every class is at target -- stopping early", flush=True)
             break
 
-        # A different seed per round, or every round regenerates the same
-        # images and the duplicate guard correctly drops all of them.
-        run_id = "round%d" % r
+        # RUN ID MUST BE UNIQUE ACROSS INVOCATIONS, not just across rounds.
+        #
+        # "round1/2/3" collides the moment the loop is run a second time: this
+        # invocation's round 2 overwrites the previous invocation's round2
+        # directory, so the accumulator sees the same number of directories all
+        # the way through and the training set never grows. Observed -- rounds 1
+        # and 2 of a re-run both trained on exactly 99 images and both scored
+        # 0.929, which reads as "more data changed nothing" when in fact there
+        # was no more data.
+        #
+        # Third time a reused name has caused this (version name, output dir,
+        # now run id), so scope it to the invocation and be done.
+        run_id = "%s-round%d" % (invocation, r)
         g = gen.anomalygen_generate(dataset_name=dataset_name,
                                     num_sdg=num_sdg,
                                     seed=seed_base + r,
