@@ -42,8 +42,16 @@ fork of their Dockerfile to maintain. Verified on the deft pool: torch
 the recipe sets fs_group=10000 -- without it the container cannot write to the
 mounted cache).
 """
-from __future__ import annotations
-
+# NO `from __future__ import annotations` HERE.
+#
+# The clearml-agent patches the top of a script it runs remotely, which pushes
+# a __future__ import below the first statement and makes it a SyntaxError:
+#
+#   SyntaxError: from __future__ imports must occur at the beginning of the file
+#
+# It is not needed anyway -- this runs on the image's Python 3.12, where
+# `dict | None` is native. The sibling modules keep theirs because they are
+# imported, not executed as the task script; only the entry point is patched.
 import os
 import subprocess
 import sys
