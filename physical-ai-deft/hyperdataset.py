@@ -260,6 +260,21 @@ def latest_published(dataset_id: str) -> dict | None:
     return versions[0]
 
 
+def source_uris(dataset_id: str, version_id: str, max_count: int = 10000) -> set:
+    """Every source URI in a version.
+
+    `datasets.get_sources` returns a map of source URL -> first frame id for a
+    version, which is exactly the question "what images are already in here?"
+    and answers it in one call. It reads sources, not pixels, so this stays a
+    metadata operation like the gap query.
+
+    NOTE it requires `dataset` as well as `version` -- version alone is a 400.
+    """
+    out = _call("get_sources", {"dataset": dataset_id, "version": version_id,
+                                "max_count": max_count})
+    return set((out.get("sources") or {}).keys())
+
+
 def stats(version_id: str) -> dict:
     """Per-label counts for a version, computed server-side.
 

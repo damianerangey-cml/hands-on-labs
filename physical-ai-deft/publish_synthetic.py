@@ -92,6 +92,21 @@ def publish_synthetic(hyperdataset_name="PCB Inspection",
         comment="NVIDIA AnomalyGen, mask-conditioned on the board's CAD")
     dest = hd.files_dest("pcb-synthetic", version_name)
 
+    # DO NOT PUBLISH THE SAME GENERATION RUN TWICE.
+    #
+    # A version is parented on the previous one, so it inherits its frames. Run
+    # publish twice against the same output directory and those images are in
+    # the dataset twice -- observed live: v2 held 24 synthetic frames, v3
+    # inherited them and added the same 24 again, so one generation run of 24
+    # became 48 frames. Nothing errors; the counts the agent reasons over just
+    # quietly inflate, which is the failure mode this whole design exists to
+    # avoid.
+    #
+    # Generated filenames are deterministic (<anomaly_type>_<NNNNN>.png), so the
+    # basenames already in the parent are enough to recognise a repeat.
+    already = {os.path.basename(u)
+               for u in hd.source_uris(ds_id, parent["id"])}
+
     scores = _nn_scores(results)
     if scores and nn_threshold is None:
         import statistics
@@ -103,12 +118,15 @@ def publish_synthetic(hyperdataset_name="PCB Inspection",
         print("no per_sample.csv -- phase 4 has not run, so every frame "
               "publishes as pending-review", flush=True)
 
-    frames, skipped, accepted = [], 0, 0
+    frames, skipped, accepted, duplicates = [], 0, 0, 0
     with open(csv_path, newline="") as fh:
         for row in csv.DictReader(fh):
             path = row.get("output_filename") or ""
             if not path or not os.path.exists(path):
                 skipped += 1
+                continue
+            if os.path.basename(path) in already:
+                duplicates += 1
                 continue
             # NVIDIA's guardrail is a SAFETY verdict, not a quality one. A frame
             # that fails it is not published at all.
@@ -150,8 +168,9 @@ def publish_synthetic(hyperdataset_name="PCB Inspection",
     after = hd.stats(version_id)["labels"]
 
     print("=" * 66, flush=True)
-    print("AFTER   (%s)  -- %d published (%d verified), %d skipped"
-          % (version_name, saved, accepted, skipped), flush=True)
+    print("AFTER   (%s)  -- %d published (%d verified), %d skipped, "
+          "%d already present" % (version_name, saved, accepted, skipped,
+                                  duplicates), flush=True)
     for k, v in sorted(after.items(), key=lambda kv: -kv[1]):
         delta = v - before.get(k, 0)
         print("  %-24s %4d %s" % (k, v, ("(+%d)" % delta) if delta else ""), flush=True)
