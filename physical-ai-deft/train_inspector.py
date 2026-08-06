@@ -175,13 +175,36 @@ def train_inspector(hyperdataset_name="PCB Inspection",
     y = np.array(labels)
     print("  features:", X.shape, flush=True)
 
-    # Stratify so every class appears in both splits; fall back if a class is
-    # too small for that, which is exactly the situation the lab starts in.
+    # THE HELD-OUT SET IS REAL IMAGES ONLY, AND THE SAME ONE EVERY ROUND.
+    #
+    # The obvious split -- train_test_split over everything -- quietly ruins the
+    # experiment in two ways. The test set grows as synthetic frames arrive, so
+    # round 2's accuracy is measured on a different exam to round 1's; and
+    # synthetic frames land IN the test set, so the model is partly graded on
+    # generated images, which flatters exactly the claim under test.
+    #
+    # The question this lab asks is "does adding synthetic TRAINING data improve
+    # performance on REAL inspection?". That needs the real images split once,
+    # deterministically, with the test half never trained on and never joined by
+    # a generated frame. `origins` is stable across rounds because the real
+    # dataset does not change, so random_state=0 gives the same exam each time.
+    origins = np.array([o for _, _, o in items])
+    real_idx = np.where(origins == "real")[0]
+    syn_idx = np.where(origins == "synthetic")[0]
+
+    Xr, yr = X[real_idx], y[real_idx]
     try:
-        Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.3,
-                                              random_state=0, stratify=y)
+        Xr_tr, Xte, yr_tr, yte = train_test_split(
+            Xr, yr, test_size=0.3, random_state=0, stratify=yr)
     except ValueError:
-        Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=0.3, random_state=0)
+        Xr_tr, Xte, yr_tr, yte = train_test_split(
+            Xr, yr, test_size=0.3, random_state=0)
+
+    # Train on the real training half PLUS every accepted synthetic frame.
+    Xtr = np.concatenate([Xr_tr, X[syn_idx]]) if len(syn_idx) else Xr_tr
+    ytr = np.concatenate([yr_tr, y[syn_idx]]) if len(syn_idx) else yr_tr
+    print("  train: %d (%d real + %d synthetic) | held-out: %d REAL only"
+          % (len(ytr), len(yr_tr), len(syn_idx), len(yte)), flush=True)
 
     clf = LogisticRegression(max_iter=2000, class_weight="balanced")
     clf.fit(Xtr, ytr)
@@ -190,7 +213,7 @@ def train_inspector(hyperdataset_name="PCB Inspection",
     report = classification_report(yte, pred, zero_division=0, output_dict=True)
 
     print("=" * 66, flush=True)
-    print("accuracy %.3f on %d held-out images" % (acc, len(yte)), flush=True)
+    print("accuracy %.3f on %d held-out REAL images" % (acc, len(yte)), flush=True)
     print(classification_report(yte, pred, zero_division=0), flush=True)
     print("=" * 66, flush=True)
 
