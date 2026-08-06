@@ -99,6 +99,38 @@ def anomalygen_generate(dataset_name="pcb-uc1",
     print("adapter:", ag_ckpt, sorted(os.listdir(ag_ckpt))
           if os.path.isdir(ag_ckpt) else "(missing)", flush=True)
 
+    # TWO OF NVIDIA'S OWN SCRIPTS DISAGREE ABOUT LAYOUT, so arrange it here.
+    #
+    # download_anomalygen_checkpoints.sh is `hf download --local-dir`, which
+    # lands the release flat: ag_config.yaml and iter_000014000.pt both at the
+    # root. run_sdg.sh reads a TRAINING-OUTPUT shape and looks for
+    # <checkpoint_dir>/checkpoints/model/iter_*.pt -- their own troubleshooting
+    # table says as much ("run ls ${CKPT}/checkpoints/model/iter_*.pt"). Point
+    # it at the download as-is and you get:
+    #
+    #   FileNotFoundError: .../Cosmos-AnomalyGen-PCB-2B/checkpoints/model/
+    #                      iter_000014000.pt
+    #
+    # ag_config.yaml at the root IS correct, so only the weights move. This is
+    # mid-product arrangement, which their CLAUDE.md puts in the editable zone;
+    # nothing upstream is patched.
+    model_dir = os.path.join(ag_ckpt, "checkpoints", "model")
+    os.makedirs(model_dir, exist_ok=True)
+    weights = "iter_%09d.pt" % step
+    src, dst = os.path.join(ag_ckpt, weights), os.path.join(model_dir, weights)
+    if not os.path.exists(dst):
+        if not os.path.exists(src):
+            raise SystemExit(
+                "expected %s in the released checkpoint; found %s"
+                % (weights, sorted(os.listdir(ag_ckpt))))
+        os.symlink(src, dst)
+    print("weights:", dst, flush=True)
+
+    # Their own pre-flight. Catches a wrong --step or a missing ag_config
+    # before torchrun spends time loading a 2B backbone to find out.
+    _run([sys.executable, "-m", "scripts.utilities.validate_checkpoint",
+          ag_ckpt, "--step", str(step)])
+
     # ---- dataset ---------------------------------------------------------
     print("=" * 66 + "\nDATASET\n" + "=" * 66, flush=True)
     dataset_dir = os.path.join(CACHE, "datasets", dataset_name)
