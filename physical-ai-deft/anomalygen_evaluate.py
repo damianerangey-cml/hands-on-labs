@@ -148,4 +148,10 @@ if __name__ == "__main__":
     thr = None
     if "--nn-threshold" in sys.argv:
         thr = float(sys.argv[sys.argv.index("--nn-threshold") + 1])
-    anomalygen_evaluate(nn_threshold=thr)
+    elif os.environ.get("DEFT_NN_THRESHOLD"):
+        thr = float(os.environ["DEFT_NN_THRESHOLD"])
+    # DEFT_RUN_DIR names the generation run to score, same as the improve stage.
+    # Without it the most recent run is scored, which is right interactively and
+    # wrong the moment two rounds are in flight.
+    anomalygen_evaluate(nn_threshold=thr,
+                        run_dir=os.environ.get("DEFT_RUN_DIR") or None)

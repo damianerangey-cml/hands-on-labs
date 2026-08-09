@@ -48,6 +48,8 @@ STAGES = {
                "training", "1XGPU"),
     "generate": ("anomalygen_generate.py", "AnomalyGen -- place masks and generate",
                  "data_processing", "1XGPU"),
+    "evaluate": ("anomalygen_evaluate.py", "AnomalyGen -- score against the real data",
+                 "data_processing", "1XGPU"),
     "improve": ("anomalygen_improve.py",
                 "AnomalyGen -- search, keep best, filter and regenerate",
                 "data_processing", "1XGPU"),
