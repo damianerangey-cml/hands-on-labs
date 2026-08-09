@@ -249,6 +249,32 @@ def anomalygen_improve(dataset_name="pcb-uc1",
                 won[r.get("best_round") or "original"] = \
                     won.get(r.get("best_round") or "original", 0) + 1
 
+    # EACH ROUND AS A WHOLE BATCH -- the comparison that is not a selection
+    # effect. `after search` is the best of three attempts per sample, so its
+    # median rises even if all three draws come from the same distribution;
+    # quoting only that number would overstate what the search found. These
+    # rows are every sample under one parameter setting, scored the same way,
+    # so they say whether a setting is actually better. They are also the
+    # finding worth keeping: "guidance 4.0 beats the 7.0 default on this
+    # dataset" is something a customer can act on without running any of this.
+    per_round = [("original (%.1f/%.1f)" % (BASE_GUIDANCE, BASE_CROP_RATIO),
+                  before)]
+    for r in range(1, int(rounds) + 1):
+        rp = os.path.join(rounds_dir, "round_%03d" % r, "per_sample.csv")
+        params = draws_for_round(r, 1).get("0", {})
+        per_round.append(("round %d (%.1f/%.1f)"
+                          % (r, params.get("guidance", 0),
+                             params.get("crop_ratio", 0)), read_scores(rp)))
+
+    print("=" * 66, flush=True)
+    print("EACH SETTING, WHOLE BATCH (no best-of picking -- guidance/crop_ratio)",
+          flush=True)
+    for name, d in per_round:
+        if d:
+            v = sorted(d.values())
+            print("  %-22s n=%-3d min=%.3f med=%.3f max=%.3f"
+                  % (name, len(v), v[0], statistics.median(v), v[-1]), flush=True)
+
     print("=" * 66, flush=True)
     print("IMPROVEMENT", flush=True)
     for name, d in (("original", before), ("after search", after),
@@ -257,6 +283,9 @@ def anomalygen_improve(dataset_name="pcb-uc1",
             v = sorted(d.values())
             print("  %-14s n=%-3d min=%.3f med=%.3f max=%.3f"
                   % (name, len(v), v[0], statistics.median(v), v[-1]), flush=True)
+    print("  ('after search' is the best of %d attempts per sample -- part of "
+          "that lift is\n   selection, which is why the table above exists)"
+          % (int(rounds) + 1), flush=True)
     if won:
         print("  winning attempt per sample: %s"
               % ", ".join("%s=%d" % kv for kv in sorted(won.items())), flush=True)
@@ -279,6 +308,13 @@ def anomalygen_improve(dataset_name="pcb-uc1",
                 title="which attempt won", series="per sample", iteration=0,
                 table_plot=[["attempt", "samples"]]
                            + [[k, v] for k, v in sorted(won.items())])
+        logger.report_table(
+            title="each setting, whole batch", series="no best-of picking",
+            iteration=0,
+            table_plot=[["setting (guidance/crop_ratio)", "n", "min", "median", "max"]]
+            + [[name, len(d), round(min(d.values()), 4),
+                round(statistics.median(d.values()), 4), round(max(d.values()), 4)]
+               for name, d in per_round if d])
         if os.path.exists(summary):
             task.upload_artifact("search_summary", summary)
 
