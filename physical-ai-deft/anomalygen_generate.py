@@ -281,19 +281,37 @@ def anomalygen_generate(dataset_name="pcb-uc1",
     for root, _d, files in os.walk(out_dir):
         made += [os.path.join(root, f) for f in sorted(files)
                  if f.lower().endswith((".png", ".jpg"))]
+
+    # COUNT THE MANIFEST, NOT THE DIRECTORY.
+    #
+    # Walking out_dir for *.png counts every intermediate NVIDIA writes -- masks,
+    # crops, per-ROI and per-seed variants -- so a run that generated 24 images
+    # reports 165, and a per-class tally by filename prefix said "asked 13, got
+    # 99". SDG_result.csv has exactly one row per generated image, and it is the
+    # same file publish_synthetic reads, so counting it here means the number
+    # printed and the number published cannot disagree.
+    rows = []
+    csv_path = os.path.join(out_dir, "SDG_result.csv")
+    if os.path.exists(csv_path):
+        import csv as _csv
+        with open(csv_path, newline="") as fh:
+            rows = list(_csv.DictReader(fh))
+
     print("=" * 66, flush=True)
-    print("generated %d image(s) -> %s" % (len(made), out_dir), flush=True)
+    print("generated %d image(s) -> %s" % (len(rows) or len(made), out_dir),
+          flush=True)
 
     # ASKED FOR vs GOT, per class. AMP can only place a mask where the CAD says
     # that fault can occur, so a request is a ceiling, not a promise -- ask for
     # 20 bridges on a board with 12 IC sites and you get 12. The loop must see
-    # the shortfall rather than assume the request was honoured, because the
+    # any shortfall rather than assume the request was honoured, because the
     # next round's gap is computed from what actually landed.
     delivered = {}
+    for r in rows:
+        dt = (r.get("anomaly_type") or "").strip()
+        if dt:
+            delivered[dt] = delivered.get(dt, 0) + 1
     if per_defect_counts:
-        names = [os.path.basename(p) for p in made]
-        for dt in per_defect_counts:
-            delivered[dt] = sum(1 for n in names if n.startswith(dt + "_"))
         print("-" * 66, flush=True)
         for dt, want in sorted(per_defect_counts.items(), key=lambda kv: -kv[1]):
             got = delivered.get(dt, 0)
@@ -319,7 +337,7 @@ def anomalygen_generate(dataset_name="pcb-uc1",
         if made:
             task.upload_artifact("generated", out_dir)
 
-    return {"output_dir": out_dir, "count": len(made),
+    return {"output_dir": out_dir, "count": len(rows) or len(made),
             "allocation": per_defect_counts, "delivered": delivered,
             "testcase": testcase, "checkpoint": ag_ckpt, "step": step}
 
