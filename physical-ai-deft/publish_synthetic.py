@@ -70,8 +70,18 @@ def publish_synthetic(hyperdataset_name="PCB Inspection",
                       version_name=None,
                       target_per_class=60,
                       nn_threshold=None,
-                      run_dir=None):
-    """Publish the generated frames, parented on the latest published version."""
+                      run_dir=None,
+                      run_id=None):
+    """Publish the generated frames, parented on the latest published version.
+
+    `run_id` identifies the generation run for the duplicate guard below. It
+    defaults to the output directory's basename, which was right while every
+    round published straight out of `runs/<run_id>/`. Once phases 5-7 run, the
+    frames worth publishing live in `runs/<run_id>/searched/`, whose basename is
+    `searched` for EVERY round -- the guard would see the same run id twice and
+    silently skip every round after the first. Pass the real run id whenever the
+    directory no longer carries it.
+    """
     import hyperdataset as hd
     from clearml import Task
 
@@ -95,7 +105,7 @@ def publish_synthetic(hyperdataset_name="PCB Inspection",
     for k, v in sorted(before.items(), key=lambda kv: -kv[1]):
         print("  %-24s %4d" % (k, v), flush=True)
 
-    run_id = os.path.basename(results.rstrip("/"))
+    run_id = run_id or os.path.basename(results.rstrip("/"))
 
     # DO NOT PUBLISH THE SAME GENERATION RUN TWICE.
     #

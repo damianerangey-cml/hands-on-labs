@@ -37,12 +37,21 @@ def run_rounds(rounds=3,
                dataset_name="pcb-uc1",
                num_sdg=24,
                target_per_class=60,
-               seed_base=0):
-    """Run `rounds` enrichment rounds end to end, in-process."""
+               seed_base=0,
+               search_rounds=2):
+    """Run `rounds` enrichment rounds end to end, in-process.
+
+    `search_rounds` is NVIDIA's phase-5 budget WITHIN each enrichment round --
+    how many times to re-roll the generation parameters before keeping the best
+    attempt per sample. It is the expensive knob: each search round regenerates
+    every sample, so a 3-round loop with search_rounds=2 generates 3x(1+2)=9
+    batches rather than 3. Set it to 0 for the filter without the search.
+    """
     from clearml import Task
 
     import anomalygen_generate as gen
     import anomalygen_evaluate as ev
+    import anomalygen_improve as improve
     import publish_synthetic as pub
     import train_inspector as tr
     import hyperdataset as hd
@@ -109,10 +118,30 @@ def run_rounds(rounds=3,
                                     gap=gap)
         run_dir = g["output_dir"]
         ev.anomalygen_evaluate(dataset_name=dataset_name, run_dir=run_dir)
+
+        # PHASES 5-7. Without them a frame that scores badly is published as
+        # pending-review and left there -- the gate can decline a bad frame but
+        # cannot get a better one. With them the round re-rolls the generation
+        # parameters, keeps the best attempt per sample, and regenerates what is
+        # still short. `search_rounds=0` skips the search and runs the filter
+        # alone, which is the cheap path.
+        publish_dir, publish_id = run_dir, None
+        if search_rounds is not None and int(search_rounds) >= 0:
+            imp = improve.anomalygen_improve(
+                dataset_name=dataset_name, run_dir=run_dir,
+                rounds=int(search_rounds), num_sdg=num_sdg,
+                allocation=g.get("allocation"), step=g.get("step") or 14000,
+                checkpoint_dir=g.get("checkpoint"), seed=seed_base + r)
+            # Publish the improved bucket, not the first attempt -- and pass the
+            # run id explicitly, because `searched` is the basename of every
+            # round's output and the duplicate guard keys on it.
+            publish_dir, publish_id = imp["searched_dir"], run_id
+
         p = pub.publish_synthetic(hyperdataset_name=hyperdataset_name,
                                   dataset_name=dataset_name,
                                   target_per_class=target_per_class,
-                                  run_dir=run_dir)
+                                  run_dir=publish_dir,
+                                  run_id=publish_id)
         if not p.get("published"):
             print("round %d published nothing -- stopping early" % r, flush=True)
             break
@@ -161,4 +190,7 @@ if __name__ == "__main__":
     n = int(os.environ.get("DEFT_ROUNDS") or 3)
     if "--rounds" in sys.argv:
         n = int(sys.argv[sys.argv.index("--rounds") + 1])
-    run_rounds(rounds=n)
+    s = int(os.environ.get("DEFT_SEARCH_ROUNDS") or 2)
+    if "--search-rounds" in sys.argv:
+        s = int(sys.argv[sys.argv.index("--search-rounds") + 1])
+    run_rounds(rounds=n, search_rounds=s)

@@ -48,6 +48,9 @@ STAGES = {
                "training", "1XGPU"),
     "generate": ("anomalygen_generate.py", "AnomalyGen -- place masks and generate",
                  "data_processing", "1XGPU"),
+    "improve": ("anomalygen_improve.py",
+                "AnomalyGen -- search, keep best, filter and regenerate",
+                "data_processing", "1XGPU"),
     "train": ("train_inspector.py", "Train the inspector", "training", "1XGPU"),
 }
 
@@ -94,6 +97,15 @@ def main():
                         "against, as label:count pairs -- "
                         "bridge:52,excess_solder:44. The loop reads this from "
                         "the HyperDataset itself.")
+    p.add_argument("--search-rounds", type=int, default=None,
+                   help="rounds/improve stages: NVIDIA phase-5 budget -- how "
+                        "many times to re-roll the generation parameters before "
+                        "keeping the best attempt per sample. 0 runs the filter "
+                        "without the search. EXPENSIVE: each one regenerates "
+                        "every sample.")
+    p.add_argument("--run-dir", default=None,
+                   help="improve stage only: the generation run to improve "
+                        "(defaults to the most recent)")
     p.add_argument("--queue", default=None, help="override the stage's queue")
     a = p.parse_args()
 
@@ -102,6 +114,12 @@ def main():
         env["DEFT_ROUNDS"] = a.rounds
     if a.num_sdg is not None:
         env["DEFT_NUM_SDG"] = a.num_sdg
+    if a.search_rounds is not None:
+        env["DEFT_SEARCH_ROUNDS"] = a.search_rounds
+    if a.run_dir is not None:
+        if " " in a.run_dir:
+            p.error("--run-dir cannot contain spaces; it rides in docker_args")
+        env["DEFT_RUN_DIR"] = a.run_dir
     if a.gap is not None:
         # Reject it here rather than ten minutes later on the agent. No spaces
         # or quotes may reach docker_args -- the agent splits it on whitespace.
