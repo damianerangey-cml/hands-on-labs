@@ -31,6 +31,7 @@ can occur -- the frames the HyperDataset's next published version is built from.
 # No `from __future__ import annotations` -- the clearml-agent patches the top of
 # a script it runs remotely, which pushes it below the first statement and makes
 # it a SyntaxError. The image is Python 3.12, so it is not needed anyway.
+import json
 import os
 import sys
 
@@ -41,18 +42,112 @@ from ag_common import CACHE, REPO_ROOT, link_checkpoints, run as _run
 RELEASED_STEP = 14000
 
 
+def defect_types_from_spec(path):
+    """NVIDIA's defect types, in spec order -- e.g. ['IC+bridge', ...].
+
+    Their naming is `<texture>+<defect>`, and the defect half is what the
+    HyperDataset stores as a frame label. That correspondence is the only reason
+    a gap read from dataset metadata can be turned into an argument to their
+    generator.
+    """
+    types = []
+    with open(path) as fh:
+        for line in fh:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                dt = json.loads(line).get("defect_type")
+            except ValueError:
+                continue
+            if dt and dt not in types:
+                types.append(dt)
+    return types
+
+
+def allocate_from_gap(gap, defect_types, budget):
+    """Split `budget` images across NVIDIA's defect types, in proportion to need.
+
+        gap          {'bridge': 52, 'excess_solder': 44}   -- HyperDataset labels
+        defect_types ['IC+bridge', 'passive_component+missing', ...]
+        ->           {'IC+bridge': 13, ...}                 -- sums to budget
+
+    THIS IS THE STEP THAT MAKES THE LOOP RESPOND TO WHAT IT MEASURED. Without
+    it the gap is only a stopping rule: `num_sdg` is a flat number and NVIDIA's
+    `allocate_samples.py` splits it UNIFORMLY across defect types, so a class
+    with 8 real examples and a class with 62 get the same 8 new images. The loop
+    reads that it is short of bridges and then generates no more bridges than
+    anything else.
+
+    Two deliberate departures from pure proportionality:
+
+      * A class already at target gets ZERO, not a token share. Generating more
+        of what you have enough of is the waste this whole method exists to
+        avoid.
+      * Every class that is short gets AT LEAST ONE, budget permitting. Pure
+        proportional rounding sends a class that is 2 short to zero when another
+        is 200 short -- and "the rare class got nothing" is precisely the
+        failure mode we are here to fix. NVIDIA make the same choice in their
+        validation mode, which floors at >=1 per defect.
+
+    When the budget cannot even give one to each needy class, the neediest are
+    served first and the rest wait for the next round.
+    """
+    by_label = {}
+    for dt in defect_types:
+        by_label.setdefault(dt.split("+")[-1], []).append(dt)
+
+    # A label shared by two textures (IC+missing and passive_component+missing)
+    # splits that label's shortfall between them -- the gap is per DEFECT, and
+    # the dataset does not say which texture it wants them on.
+    weights = {}
+    for label, dts in by_label.items():
+        short = max(0, int(gap.get(label) or 0))
+        if short:
+            for dt in dts:
+                weights[dt] = short / float(len(dts))
+    if not weights:
+        return None
+
+    budget = int(budget)
+    ranked = sorted(weights, key=lambda d: (-weights[d], d))
+    if budget <= len(ranked):
+        return {dt: (1 if i < budget else 0) for i, dt in enumerate(ranked)}
+
+    total = sum(weights.values())
+    rest = budget - len(ranked)
+    exact = {dt: rest * weights[dt] / total for dt in ranked}
+    alloc = {dt: 1 + int(exact[dt]) for dt in ranked}
+
+    # Largest remainder, so the counts sum to exactly `budget` rather than to
+    # budget-minus-however-many-fractions-were-discarded.
+    for dt in sorted(ranked, key=lambda d: (-(exact[d] - int(exact[d])), d)
+                     )[:budget - sum(alloc.values())]:
+        alloc[dt] += 1
+    return alloc
+
 
 def anomalygen_generate(dataset_name="pcb-uc1",
                         num_sdg=24,
                         model_size="2b",
                         seed=0,
                         step=RELEASED_STEP,
-                        run_id=None):
+                        run_id=None,
+                        gap=None,
+                        per_defect_counts=None):
     """Fetch NVIDIA's trained adapter, place masks, and generate.
 
-    `num_sdg` is how many synthetic images to produce. In the agentic loop this
-    is not a constant -- it is what the agent worked out from the HyperDataset's
-    metadata, i.e. how short each defect class is of its target.
+    `num_sdg` is the round's budget -- how many synthetic images to produce.
+
+    `gap` is how short each defect class is, straight from the HyperDataset's
+    label counts. Pass it and the budget is allocated across defect types in
+    proportion to need instead of uniformly; that is the difference between a
+    loop that reads its own state and one that merely reports it.
+
+    `per_defect_counts` is the explicit override -- a dict of NVIDIA defect type
+    to count. It wins over `gap`, and exists so a future agent can allocate on
+    something richer than the shortfall (last round's nn_scores, say) without
+    this function needing to know how it decided.
     """
     from clearml import Task
 
@@ -121,6 +216,26 @@ def anomalygen_generate(dataset_name="pcb-uc1",
         _run([sys.executable, "scripts/utilities/prepare_dataset_uc1.py", dataset_dir])
     defect_spec = os.path.join(dataset_dir, "defect_spec.jsonl")
 
+    # ---- the allocation --------------------------------------------------
+    # `--per-defect-counts` is NVIDIA's own supported override for inference
+    # mode (allocate_samples.py), so asking for more of the scarce class needs
+    # no fork and no per-class invocation -- just a JSON dict on the existing
+    # call. Without it the same script allocates UNIFORMLY.
+    if per_defect_counts is None and gap:
+        per_defect_counts = allocate_from_gap(
+            gap, defect_types_from_spec(defect_spec), num_sdg)
+
+    if per_defect_counts:
+        print("=" * 66 + "\nALLOCATION -- %d image(s), by shortfall\n" % num_sdg
+              + "=" * 66, flush=True)
+        for dt, n in sorted(per_defect_counts.items(), key=lambda kv: -kv[1]):
+            label = dt.split("+")[-1]
+            print("  %-34s %3d   (short %s)"
+                  % (dt, n, (gap or {}).get(label, "?")), flush=True)
+    else:
+        print("no gap supplied -- NVIDIA's uniform allocation of %d across "
+              "every defect type" % num_sdg, flush=True)
+
     # ---- phase 2: automatic mask placement ------------------------------
     # Inference mode, NOT validation: no per-defect floor, and num_sdg is the
     # target count rather than the training mask count.
@@ -128,14 +243,17 @@ def anomalygen_generate(dataset_name="pcb-uc1",
     work = os.path.join(CACHE, "ag_inference", dataset_name)
     testcase = os.path.join(work, "testcase.jsonl")
     os.makedirs(work, exist_ok=True)
-    _run(["bash", "scripts/utilities/prep_testcase.sh",
-          "--name", dataset_name,
-          "--num-sdg", str(num_sdg),
-          "--dataset-dir", dataset_dir,
-          "--amp-output-dir", os.path.join(work, "amp"),
-          "--output-jsonl", testcase,
-          "--defect-spec", defect_spec,
-          "--mode", "inference"])
+    cmd = ["bash", "scripts/utilities/prep_testcase.sh",
+           "--name", dataset_name,
+           "--num-sdg", str(num_sdg),
+           "--dataset-dir", dataset_dir,
+           "--amp-output-dir", os.path.join(work, "amp"),
+           "--output-jsonl", testcase,
+           "--defect-spec", defect_spec,
+           "--mode", "inference"]
+    if per_defect_counts:
+        cmd += ["--per-defect-counts", json.dumps(per_defect_counts)]
+    _run(cmd)
 
     # ---- phase 3: generation --------------------------------------------
     print("=" * 66 + "\nPHASE 3 -- SDG generation\n" + "=" * 66, flush=True)
@@ -165,17 +283,44 @@ def anomalygen_generate(dataset_name="pcb-uc1",
                  if f.lower().endswith((".png", ".jpg"))]
     print("=" * 66, flush=True)
     print("generated %d image(s) -> %s" % (len(made), out_dir), flush=True)
+
+    # ASKED FOR vs GOT, per class. AMP can only place a mask where the CAD says
+    # that fault can occur, so a request is a ceiling, not a promise -- ask for
+    # 20 bridges on a board with 12 IC sites and you get 12. The loop must see
+    # the shortfall rather than assume the request was honoured, because the
+    # next round's gap is computed from what actually landed.
+    delivered = {}
+    if per_defect_counts:
+        names = [os.path.basename(p) for p in made]
+        for dt in per_defect_counts:
+            delivered[dt] = sum(1 for n in names if n.startswith(dt + "_"))
+        print("-" * 66, flush=True)
+        for dt, want in sorted(per_defect_counts.items(), key=lambda kv: -kv[1]):
+            got = delivered.get(dt, 0)
+            print("  %-34s asked %3d  got %3d%s"
+                  % (dt, want, got, "   <-- SHORT" if got < want else ""),
+                  flush=True)
     print("=" * 66, flush=True)
 
-    if task and made:
+    if task:
         logger = task.get_logger()
         # One grid, not N rows: same iteration, distinct series.
         for i, p in enumerate(made[:12]):
             logger.report_image(title="AnomalyGen", series="synthetic_%02d" % i,
                                 iteration=0, local_path=p)
-        task.upload_artifact("generated", out_dir)
+        if per_defect_counts:
+            logger.report_table(
+                title="the allocation", series="asked vs got", iteration=0,
+                table_plot=[["defect type", "short by", "asked", "got"]]
+                + [[dt, (gap or {}).get(dt.split("+")[-1], ""),
+                    per_defect_counts[dt], delivered.get(dt, 0)]
+                   for dt in sorted(per_defect_counts,
+                                    key=lambda d: -per_defect_counts[d])])
+        if made:
+            task.upload_artifact("generated", out_dir)
 
     return {"output_dir": out_dir, "count": len(made),
+            "allocation": per_defect_counts, "delivered": delivered,
             "testcase": testcase, "checkpoint": ag_ckpt, "step": step}
 
 

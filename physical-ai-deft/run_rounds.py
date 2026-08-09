@@ -97,10 +97,16 @@ def run_rounds(rounds=3,
         # Third time a reused name has caused this (version name, output dir,
         # now run id), so scope it to the invocation and be done.
         run_id = "%s-round%d" % (invocation, r)
+        # THE GAP IS AN ARGUMENT NOW, not just a stopping rule. Passing it makes
+        # the round generate in proportion to what each class is short of;
+        # without it NVIDIA's allocator splits the budget uniformly and the loop
+        # reads that it needs bridges, then asks for no more bridges than
+        # anything else.
         g = gen.anomalygen_generate(dataset_name=dataset_name,
                                     num_sdg=num_sdg,
                                     seed=seed_base + r,
-                                    run_id=run_id)
+                                    run_id=run_id,
+                                    gap=gap)
         run_dir = g["output_dir"]
         ev.anomalygen_evaluate(dataset_name=dataset_name, run_dir=run_dir)
         p = pub.publish_synthetic(hyperdataset_name=hyperdataset_name,
