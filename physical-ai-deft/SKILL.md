@@ -24,20 +24,33 @@ register the real data          177 frames -> HyperDataset v1-real
 read the gap                    label counts, server-side, ~1s, no pixels move
   |
   v                             for each of N rounds:
-generate                        NVIDIA AnomalyGen -- masks placed from the board's CAD,
-  |                             defect inpainted where the mask says
+allocate                        the shortfall becomes NVIDIA's --per-defect-counts,
+  |                             so the scarce class gets the images   (phase 2)
   v
-score                           nn_score against the REAL examples of that class
+generate                        masks placed from the board's CAD, defect
+  |                             inpainted where the mask says          (phase 3)
+  v
+score                           nn_score against the REAL examples     (phase 4)
   |
   v
-publish                         survivors -> the next immutable version, parented on the last
-  |
+improve                         re-roll (guidance, crop_ratio), keep the best
+  |                             attempt per sample, regenerate what is
+  |                             still short                          (phases 5-7)
+  v
+publish                         survivors -> the next immutable version, parented
+  |                             on the last
   v
 train                           an inspector on that version, registered against it
 ```
 
 The output is N+1 dataset versions and N+1 registered models (N rounds plus a
 real-only baseline), each model carrying the version id it trained on.
+
+**The two knobs that cost money.** `--rounds` is how many enrichment rounds;
+`--search-rounds` is NVIDIA's phase-5 budget *within* each one. Each search
+round regenerates every sample, so `--rounds 3 --search-rounds 2` generates
+**nine** batches, not three. `--search-rounds 0` runs the filter without the
+search.
 
 ---
 
@@ -78,11 +91,16 @@ which one is missing. Run it first. It is cheap and it will save you an hour.
 ```bash
 python probe_parity.py            # verify the pod matches what NVIDIA's container expects
 python launch.py register         # 177 frames -> HyperDataset v1-real
-python launch.py rounds --rounds 3
+python launch.py rounds --rounds 3 --search-rounds 2
 ```
 
 `launch.py` does not do the work — it creates a task pointing at this repo at a
 commit and enqueues it. The GPU work happens on the agent.
+
+Each stage is also runnable alone, which is how you debug one without paying for
+the others: `generate`, `evaluate`, `improve`, `train`. The later ones need the
+earlier ones' output on the shared cache — `improve` refuses up front if
+`per_sample.csv` is missing rather than failing deep inside NVIDIA's scripts.
 
 Verify after each step rather than at the end:
 
@@ -90,8 +108,11 @@ Verify after each step rather than at the end:
 |---|---|---|
 | `probe_parity.py` | its printed table | GPU present, `/dev/shm` ≥ 16 G, cache path writable, both credentials present |
 | `register` | the HyperDataset in the UI | **177 frames, 100% annotated**; label counts `missing 62 / excess_solder 16 / bridge 8 / clean 5 / mask 86` |
-| generation (inside `rounds`) | the console | `Total: 24 samples (0 text2roi, 24 cad2roi, 0 free)` — see trap 4 if you see `free` |
-| scoring | the console | three `nn_score` lines, n=8 each, medians ~0.65 |
+| allocation | the console | `ALLOCATION -- 24 image(s), by shortfall`, the scarce class largest, a class at target absent entirely |
+| mask placement | the console | `24 cad2roi, 0 free` — see trap 4 if you see `free` |
+| generation | the console | `asked N got N` per class. A shortfall here is real (trap 11), not a bug |
+| scoring | the console | one `nn_score` line per class, medians ~0.65 |
+| improve | the console | `IMPROVEMENT` block: median before vs after, and which attempt won per sample |
 | publish | the version list | a NEW version each round; counts **grew** |
 | train | the models list | one model per round + `inspector-baseline` |
 
@@ -175,6 +196,18 @@ Do not "fix" it to match on basename: generated filenames are deterministic
 different images. A basename guard blocks every legitimate round after the
 first and stalls the loop silently.
 
+### 5b. ...and the searched/ directory breaks that guard a second way
+
+Once phases 5–7 run, the frames worth publishing are not in `runs/<run_id>/` but
+in `runs/<run_id>/searched/`. The dedup guard keys on the directory's basename,
+and that basename is `searched` for **every** round — so round 2 looks like a
+republish of round 1 and is skipped, silently, with no error and no new frames.
+
+`publish_synthetic(run_id=...)` exists for exactly this. Pass the real run id
+whenever the directory no longer carries it. This is the fourth time a reused
+name has broken this loop (version name, output dir, run id, now the searched
+bucket) — if you add a stage that moves where frames live, check this first.
+
 ### 6. Three separate reasons rounds fail to accumulate
 
 All three produce the same symptom — the training set never grows, accuracy is
@@ -225,6 +258,28 @@ phases 0+1 properly.
 hardcode `v2` — a re-run then fails on a name that is already taken, mid-loop,
 after the GPU work is done.
 
+### 11. "asked N, got fewer" is usually real — check before you call it a bug
+
+Automatic Mask Placement can only put a defect where the CAD says that fault can
+occur. Ask for 20 bridges on a board with 12 IC sites and you get 12. The
+request is a ceiling, not a promise, and the next round's gap is computed from
+what actually landed — so the shortfall must be visible.
+
+Two ways to be misled here, both observed:
+
+- **Counting the wrong thing.** NVIDIA writes each generated image into six
+  subdirectories (`annotated_image`, `cropped_image`, `cropped_mask`,
+  `original_image`, `original_mask`, `reconstructed_image`), so a directory walk
+  reports 165 files for 24 images and a per-class tally by filename prefix
+  multiplies accordingly. Count rows in `SDG_result.csv` — one per image, and the
+  same file `publish_synthetic` reads.
+- **AMP "samples" are not images.** `Total: 13 samples (0 text2roi, 13 cad2roi,
+  0 free)` counts (clean board x defect type) work items, each of which yields
+  several ROI x seed images. 13 samples produced 24 images. Not a shortfall.
+
+A genuine shortfall shows up as `place_all ... ok < requested` or `fallback > 0`
+in the AMP log.
+
 ---
 
 ## What to tell the user at the end
@@ -246,12 +301,13 @@ question properly — and that is the actual recommendation.
 
 | File | What it is |
 |---|---|
-| `launch.py` | Entry point. Creates + enqueues a task per stage, with the three settings that matter. |
+| `launch.py` | Entry point. Creates + enqueues a task per stage, with the three container settings that matter. |
 | `probe_parity.py` | Run first. Reports what the task pod actually gave the container. |
 | `register_real.py` | NVIDIA's 86 images -> HyperDataset `v1-real`. |
 | `hyperdataset.py` | The six `datasets.*` / `frames.*` calls, including `stats()` — the ~1s gap read. |
 | `anomalygen_generate.py` | Phases 2–3. Mask placement + generation, per-run output dir. |
 | `anomalygen_evaluate.py` | Phase 4. `run_eval.sh`, parses `per_sample.csv`. |
+| `anomalygen_improve.py` | Phases 5–7. Search, keep-best, filter+regenerate. `draws_for_round()` is the seat an agent takes. |
 | `anomalygen_finetune.py` | Phases 0–1. Needs >24 GB. |
 | `publish_synthetic.py` | Survivors -> next version, with run-scoped dedup and per-frame label earning. |
 | `train_inspector.py` | Frozen DINOv2 + logistic regression, fixed real-only holdout. |
