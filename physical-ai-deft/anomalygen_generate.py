@@ -324,5 +324,31 @@ def anomalygen_generate(dataset_name="pcb-uc1",
             "testcase": testcase, "checkpoint": ag_ckpt, "step": step}
 
 
+def parse_gap(text):
+    """`bridge:52,excess_solder:44` -> {'bridge': 52, 'excess_solder': 44}.
+
+    NOT JSON, on purpose. This arrives as an env var through `docker_args`,
+    which the agent splits on whitespace and hands to a shell -- so the quotes
+    and braces JSON needs are exactly the characters that do not survive the
+    trip. Base64 would survive but would also make the task record unreadable,
+    and the reason for putting the allocation on the record at all is that a
+    human can see what the round was asked for.
+    """
+    out = {}
+    for part in (text or "").split(","):
+        part = part.strip()
+        if not part:
+            continue
+        k, _, v = part.partition(":")
+        out[k.strip()] = int(v)
+    return out
+
+
 if __name__ == "__main__":
-    anomalygen_generate()
+    # DEFT_GAP drives a standalone generate with an explicit shortfall, e.g.
+    # `bridge:52,excess_solder:44`. Inside the loop the gap is read from the
+    # HyperDataset instead; this is for testing the allocation, and for a human
+    # who already knows what they are short of.
+    _gap = os.environ.get("DEFT_GAP")
+    anomalygen_generate(num_sdg=int(os.environ.get("DEFT_NUM_SDG") or 24),
+                        gap=parse_gap(_gap) if _gap else None)

@@ -87,12 +87,30 @@ def main():
     p.add_argument("stage", choices=sorted(STAGES))
     p.add_argument("--rounds", type=int, default=None,
                    help="rounds stage only: how many enrichment rounds to run")
+    p.add_argument("--num-sdg", type=int, default=None,
+                   help="generate stage only: how many images this round")
+    p.add_argument("--gap", default=None,
+                   help="generate stage only: explicit shortfall to allocate "
+                        "against, as label:count pairs -- "
+                        "bridge:52,excess_solder:44. The loop reads this from "
+                        "the HyperDataset itself.")
     p.add_argument("--queue", default=None, help="override the stage's queue")
     a = p.parse_args()
 
     env = {}
     if a.rounds is not None:
         env["DEFT_ROUNDS"] = a.rounds
+    if a.num_sdg is not None:
+        env["DEFT_NUM_SDG"] = a.num_sdg
+    if a.gap is not None:
+        # Reject it here rather than ten minutes later on the agent. No spaces
+        # or quotes may reach docker_args -- the agent splits it on whitespace.
+        for pair in a.gap.split(","):
+            label, _, count = pair.partition(":")
+            if not label.strip() or not count.strip().isdigit():
+                p.error("--gap wants label:count pairs, e.g. "
+                        "bridge:52,excess_solder:44 (got %r)" % pair)
+        env["DEFT_GAP"] = a.gap.replace(" ", "")
     launch(a.stage, queue=a.queue, env=env)
 
 
