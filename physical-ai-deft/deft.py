@@ -102,6 +102,15 @@ _QUEUE_WANT = {
 CONF = os.path.expanduser(os.environ.get("DEFT_CONF", "~/.deft/config.json"))
 
 
+class NoSuchQueue(LookupError):
+    """This server has no queue for that role, and somebody has confirmed it.
+
+    Distinct from the plain LookupError meaning "nobody has told me yet". The
+    caller can catch this one and skip the stage; catching the other and
+    skipping would silently drop work because a question went unanswered.
+    """
+
+
 def config():
     """Whatever has been recorded about this server. {} if nothing has."""
     import json
@@ -119,9 +128,19 @@ def set_queues(gpu=None, cpu=None, gpu48=None):
     a typo would reproduce the exact failure this whole mechanism exists to
     prevent, except now it would be durable.
 
-    Pass a role you do not have as None and it stays unset; `gpu48` is genuinely
-    optional, and a server with no 48 GB card should skip the fine-tune rather
-    than send it somewhere that cannot run it.
+    Three ways to answer a role, and the middle one is the point:
+
+        gpu48="1xGPU-48GB"   there is one, and this is it
+        gpu48=False          THERE IS NONE HERE -- recorded, so nobody re-asks
+        gpu48=None           no answer yet (leaves any previous answer alone)
+
+    `False` matters because "we don't have that" is a real answer and used to be
+    unrecordable: the agent would be told there was no 48 GB queue, store
+    nothing, and ask again on the next call. An answer you cannot write down is
+    a question you ask forever, and an agent that keeps asking eventually
+    guesses. Only `gpu48` is genuinely optional -- without it the fine-tune is
+    skipped and the other six phases run on a 24 GB card, which is what this
+    lab has been demonstrating.
     """
     import difflib
     import json
@@ -145,18 +164,50 @@ def set_queues(gpu=None, cpu=None, gpu48=None):
             "%d queues here; deft.queues() lists them all."
             % ("\n".join(lines), len(have)))
     conf = config()
+    # `False` -> stored as JSON null, meaning "asked and answered: none here".
+    # `None`  -> not mentioned in this call, so leave whatever was there.
     conf.setdefault("queues", {}).update(
-        {k: v for k, v in want.items() if v})
+        {k: (None if v is False else v)
+         for k, v in want.items() if v is not None})
     os.makedirs(os.path.dirname(CONF) or ".", exist_ok=True)
     with open(CONF, "w") as fh:
         json.dump(conf, fh, indent=2, sort_keys=True)
     return conf["queues"]
 
 
-def queues():
+def _recent_task_counts(limit=1000):
+    """{queue_id: how many of the last `limit` tasks ran there}.
+
+    The only evidence available that a queue is CONNECTED TO ANYTHING. A name
+    is chosen by whoever created the queue and need not describe what serves it,
+    or whether anything does; `workers` says nothing on enterprise (see below);
+    and the autoscaler or pool mapping that actually decides is not exposed over
+    the API. But a queue that has run work has, demonstrably, run work.
+
+    Best-effort: returns {} rather than raising, because a missing shortlist
+    should degrade the question, not break it.
+    """
+    from clearml.backend_api.session.client import APIClient
+    try:
+        tasks = APIClient().tasks.get_all(
+            only_fields=["execution.queue"], page=0, page_size=limit,
+            order_by=["-last_update"])
+    except Exception:
+        return {}
+    counts = {}
+    for t in tasks:
+        ex = getattr(t, "execution", None)
+        qid = (ex or {}).get("queue") if isinstance(ex, dict) \
+            else getattr(ex, "queue", None)
+        if qid:
+            counts[qid] = counts.get(qid, 0) + 1
+    return counts
+
+
+def queues(activity=True):
     """Every queue on this server, with whatever tells them apart.
 
-    Returns a list of {name, id, workers, queued}.
+    Returns {name, id, workers, queued, recent_tasks}.
 
     DO NOT READ `workers == 0` AS "NOTHING SERVES THIS". It is a useful signal
     on a stock ClearML deployment and a LIE on some enterprise ones: where
@@ -165,11 +216,15 @@ def queues():
     being perfectly well served. Measured on the deployment this was written
     against -- every queue reported 0 workers while tasks ran on all of them.
 
-    So treat this as evidence, not proof, and prefer asking a human over
-    concluding a queue is dead.
+    `recent_tasks` is the signal that survives that. Measured on a server with
+    255 queues: two of them had ever run anything, and those two were the only
+    two with autoscalers behind them. It is evidence, not proof -- a brand new
+    queue has run nothing and may still be perfectly alive -- so it belongs in
+    the QUESTION you put to a human, not in a decision you make without one.
     """
     from clearml.backend_api.session.client import APIClient
     c = APIClient()
+    seen = _recent_task_counts() if activity else {}
     out = []
     for q in c.queues.get_all():
         workers = list(getattr(q, "workers", None) or [])
@@ -181,6 +236,7 @@ def queues():
             "queued": len(entries),
             "worker_names": [getattr(w, "key", None) or getattr(w, "name", "?")
                              for w in workers][:4],
+            "recent_tasks": seen.get(q.id, 0),
         })
     return sorted(out, key=lambda d: d["name"])
 
@@ -199,25 +255,65 @@ def pick_queue(kind="gpu"):
     env = os.environ.get(_QUEUE_ENV[kind])
     if env:
         return env
-    recorded = config().get("queues", {}).get(kind)
-    if recorded:
-        return recorded
-    have = sorted(q["name"] for q in queues())
-    # Show a readable sample, not an inventory. A server with 255 queues turns
-    # a helpful error into a wall nobody reads, and the full list is one call
-    # away for anyone who wants it.
-    shown = "\n  ".join(have[:30]) or "(none)"
-    more = ("\n  ... and %d more -- deft.queues() lists them all"
-            % (len(have) - 30)) if len(have) > 30 else ""
+    known = config().get("queues", {})
+    if known.get(kind):
+        return known[kind]
+    if kind in known:
+        # Recorded as null: somebody was asked and said this server has none.
+        # A different exception on purpose -- "no such queue here, skip the
+        # stage" is an answer, and must not read like "nobody has told me yet".
+        raise NoSuchQueue(
+            "This server has no queue for %s (%s) -- recorded by set_queues.\n"
+            "%s"
+            % (kind, _QUEUE_WANT[kind],
+               "Skip the fine-tune; the other phases run on the gpu queue."
+               if kind == "gpu48" else
+               "Nothing can run until somebody records one."))
+    # This message is the QUESTION an agent will put to a person, so it is
+    # written as one. It leads with what is actually known (which queues have
+    # run work), states plainly what cannot be known from here, and offers no
+    # ranking -- because a recommendation drawn from evidence you have just
+    # called insufficient is not a recommendation, it is a rubber stamp waiting
+    # to be signed. Observed: an agent refused all three roles for want of
+    # evidence and then, in the same reply, ranked them by name. The human
+    # approved the ranking instead of supplying the answer they actually had.
+    all_q = queues()
+    live = sorted((q for q in all_q if q["recent_tasks"]),
+                  key=lambda q: -q["recent_tasks"])
+    idle = sorted(q["name"] for q in all_q if not q["recent_tasks"])
+
+    if live:
+        seen = "\n".join("  %-32s %d recent task%s"
+                         % (q["name"], q["recent_tasks"],
+                            "" if q["recent_tasks"] == 1 else "s")
+                         for q in live[:15])
+        evidence = (
+            "Queues that have actually run something recently:\n%s\n\n"
+            "%d other queue%s exist and have run nothing in that window. That is\n"
+            "NOT proof they are dead -- a new queue has no history either -- and a\n"
+            "queue above is not proof it suits this role.\n"
+            % (seen, len(idle), "" if len(idle) == 1 else "s"))
+    else:
+        evidence = (
+            "No queue here has run anything recently, so I have no evidence at\n"
+            "all about which are live. %d queues exist; deft.queues() lists them.\n"
+            % len(all_q))
+
     raise LookupError(
-        "I do not know which queue to use for %s (%s).\n"
-        "\n"
-        "Queues on this server:\n  %s%s\n"
-        "\n"
-        "Ask which one, then record it so nobody has to answer twice:\n"
+        "I do not know which queue to use for %s (%s).\n\n"
+        "%s\n"
+        "I cannot tell which queues have compute behind them. `workers` reads 0\n"
+        "for all of them on this kind of deployment, and the autoscaler or pool\n"
+        "mapping that decides is not exposed to me. A queue's NAME is not\n"
+        "evidence either -- whoever created it chose it, and it need not say\n"
+        "anything about what serves it, or whether anything does.\n\n"
+        "So: ask which queue serves this role. Show this list, do not rank it,\n"
+        "and do not offer a favourite -- you would be guessing from the same\n"
+        "names you have just been told mean nothing.\n\n"
+        "Record the reply:\n"
         "  deft.set_queues(%s=\"<name>\")\n"
-        "(or export %s=<name> for a one-off)"
-        % (kind, _QUEUE_WANT[kind], shown, more, kind, _QUEUE_ENV[kind])
+        "  deft.set_queues(%s=False)      # if there is none here -- also an answer\n"
+        % (kind, _QUEUE_WANT[kind], evidence, kind, kind)
     )
 
 

@@ -75,11 +75,51 @@ Three roles to fill, and you may need one answer per role:
 | `cpu` | no GPU — registration and coordination | no |
 | `gpu48` | **48 GB or more** — only the phase-1 fine-tune | **yes** |
 
+**A queue existing is not evidence anything runs it.** Measured on a live
+server: 255 queues, of which exactly **two** had compute behind them — one CPU
+autoscaler and one GPU autoscaler. The other 253 were real, listed, accepting,
+and served by nothing. No API call distinguishes them; `workers` reads 0 on all
+of them (see `queues()` below for why). The mapping lives in the autoscaler or
+pool configuration, which you cannot see.
+
+This is the whole reason the question goes to a person. Do not treat a plausible
+name as a shortlist. On that server the queues whose names advertised exactly
+what this pipeline wants were among the dead ones, and the two live ones were
+named after nothing in particular — someone's initials, a ticket number, an
+internal team's shorthand. Queue names are chosen by whoever creates them and
+are under no obligation to describe what is behind them.
+
+`queues()` gives you one piece of real evidence: `recent_tasks`, how many of the
+last thousand tasks ran there. A queue that has run work has demonstrably run
+work. It is not proof — a new queue has no history and may be perfectly alive —
+but on the 255-queue server it named both live queues and nothing else.
+
+### Ask the question, do not also answer it
+
+**When you ask, do not rank the options and do not name a favourite.** This is
+the failure that actually happened, and it is subtle enough to be worth spelling
+out: an agent refused all three roles for want of evidence, and then, in the same
+reply, produced a table of recommendations reasoned from queue names — the
+evidence it had just called insufficient. The human approved the table instead of
+supplying the answer they already had, and two of the three were dead queues.
+
+A question with a confident recommendation attached is not a question. It is a
+proposal inviting a rubber stamp, and it costs you the one thing you asked for:
+what the person knows and you cannot. So present the list, say plainly what you
+cannot determine, and stop. `pick_queue`'s own error message is written this way
+— **quote it rather than paraphrasing it into advice.**
+
 Once you have the answers, **write them down**:
 
 ```python
-deft.set_queues(gpu="...", cpu="...", gpu48="...")   # gpu48=None if there is none
+deft.set_queues(gpu="...", cpu="...", gpu48="...")
+deft.set_queues(gpu48=False)     # "there is no 48 GB queue here" -- also an answer
 ```
+
+`False` is not the same as leaving it out. It records *asked and answered:
+none*, and `pick_queue("gpu48")` then raises `deft.NoSuchQueue` — catch that
+and skip the fine-tune. Leaving it out records nothing, so you will ask again
+next time, and an agent that keeps asking eventually guesses.
 
 It checks each name against the server before recording it — a typo saved to
 disk would reproduce the exact silent hang this is here to prevent, only
