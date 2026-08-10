@@ -162,6 +162,12 @@ def main():
     p.add_argument("--run-dir", default=None,
                    help="improve stage only: the generation run to improve "
                         "(defaults to the most recent)")
+    p.add_argument("--run-id", default=None,
+                   help="generate stage only: unique id for this generation "
+                        "run. MUST differ per invocation -- reusing one makes "
+                        "the next publish skip the round silently.")
+    p.add_argument("--seed", type=int, default=None,
+                   help="generate stage only: generation seed")
     p.add_argument("--baseline", action="store_true",
                    help="train stage only: the CONTROL -- real images only, no "
                         "synthetic. Run this once before generating anything; "
@@ -183,6 +189,12 @@ def main():
         if " " in a.run_dir:
             p.error("--run-dir cannot contain spaces; it rides in docker_args")
         env["DEFT_RUN_DIR"] = a.run_dir
+    if a.run_id:
+        if " " in a.run_id:
+            p.error("--run-id cannot contain spaces; it rides in docker_args")
+        env["DEFT_RUN_ID"] = a.run_id
+    if a.seed is not None:
+        env["DEFT_SEED"] = a.seed
     if a.baseline:
         env["DEFT_BASELINE"] = 1
     if a.name:

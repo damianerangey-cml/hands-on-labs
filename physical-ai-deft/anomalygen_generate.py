@@ -367,5 +367,14 @@ if __name__ == "__main__":
     # HyperDataset instead; this is for testing the allocation, and for a human
     # who already knows what they are short of.
     _gap = os.environ.get("DEFT_GAP")
+    # DEFT_RUN_ID MUST BE SETTABLE FROM OUTSIDE. Without it this defaults to
+    # `seed<N>`, so every generate launched as a task writes to the same run
+    # directory -- and publish_synthetic's duplicate guard, which keys on the
+    # run id, then treats the second round as already published and adds
+    # nothing. No error, no frames, a round that looks like it worked. The
+    # in-process API (deft.generate) refuses to invent one for this reason; the
+    # task entry point had no way to supply one at all.
     anomalygen_generate(num_sdg=int(os.environ.get("DEFT_NUM_SDG") or 24),
-                        gap=parse_gap(_gap) if _gap else None)
+                        gap=parse_gap(_gap) if _gap else None,
+                        run_id=os.environ.get("DEFT_RUN_ID") or None,
+                        seed=int(os.environ.get("DEFT_SEED") or 0))
