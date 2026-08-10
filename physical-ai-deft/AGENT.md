@@ -1,5 +1,12 @@
 # You own this inspection dataset
 
+> **Installed as a skill?** `.claude/skills/physical-ai-deft/` in this repo is a
+> Claude Code skill covering the same ground in brief. Clone the repo into your
+> workspace and it loads itself — no one has to remember to point you here. This
+> file is the long form; the skill is the summary that triggers.
+
+
+
 You are running inside a Klique lab, in a workspace with this repository cloned
 and ClearML credentials already in the environment. There is a GPU behind a
 queue. You do not hold it; you submit work to it.
