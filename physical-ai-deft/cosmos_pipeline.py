@@ -77,6 +77,24 @@ def register_real(hyperdataset_name="PCB Inspection",
     and `<texture>/clean_image` -- so the ingest reads the tree once and turns
     it into per-frame labels. After this, nobody needs to know that layout
     again; the labels are queryable.
+
+    IDEMPOTENT, BECAUSE THE DATA IS THE SAME DATA
+    ----------------------------------------------
+    `v1-real` is NVIDIA's 86 images. Registering them twice would be wrong even
+    if the API allowed it -- there is one real dataset, not one per run. And the
+    API does not allow it; a second call died on
+
+        HTTP 400 ... A dataset version with the provided name already exists
+
+    which is a rude way to greet somebody whose very first command this is. It
+    happens more often than "fresh server" suggests: a HyperDataset can outlive
+    the lab that created it, so the second claim of the same slot hits this.
+
+    So if a published `v1-real` is already there, report it and hand back the
+    dataset. Deliberately NOT falling through to `next_version_name()` -- a
+    `v2-real` holding a second copy of the same 86 images would double every
+    count the loop reasons over, which is the one failure this pipeline cannot
+    tolerate. A name collision here means "already done", not "pick a new name".
     """
     import os
     import hyperdataset as hd
@@ -84,11 +102,27 @@ def register_real(hyperdataset_name="PCB Inspection",
     from huggingface_hub import snapshot_download
 
     task = Task.current_task()
+    ds_id = hd.get_or_create_dataset(hyperdataset_name, tags=["physical-ai", "pcb"])
+    already = [v for v in (hd._call(
+                   "get_versions", {"dataset": ds_id, "only_published": True,
+                                    "page": 0, "page_size": 100}
+               ).get("versions") or []) if (v.get("name") or "") == version_name]
+    if already:
+        counts = hd.stats(already[0]["id"]).get("labels", {})
+        print("=" * 66, flush=True)
+        print("%s already published on this server -- reusing it" % version_name,
+              flush=True)
+        for k, v in sorted(counts.items(), key=lambda kv: -kv[1]):
+            print("  %-24s %4d" % (k, v), flush=True)
+        print("(the real data is registered once; a second copy would double "
+              "every count the loop reads)", flush=True)
+        print("=" * 66, flush=True)
+        return ds_id
+
     local = snapshot_download(repo_id=hf_repo, repo_type="dataset",
                               token=os.environ.get("HF_TOKEN"))
     print("downloaded", hf_repo, "->", local)
 
-    ds_id = hd.get_or_create_dataset(hyperdataset_name, tags=["physical-ai", "pcb"])
     version_id = hd.create_draft(
         ds_id, version_name,
         comment="NVIDIA %s, ingested verbatim" % hf_repo)
