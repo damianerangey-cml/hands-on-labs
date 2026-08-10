@@ -212,23 +212,41 @@ volume is.
 
 ## The operations
 
-| Call | What it does | What you decide |
-|---|---|---|
-| `deft.gap(target=60)` | Reads the shortfall | The target |
-| `deft.generate(gap=…, n=24, run_id=…)` | Masks from the board's CAD, then generation | How many, and of what — pass `per_defect_counts` to split it yourself |
-| `deft.score(run_dir)` | NVIDIA's `nn_score` against the real examples | The threshold, or let it default to the batch median |
-| `deft.improve(run_dir, search_rounds=1)` | Re-rolls generation parameters, keeps the best attempt per sample, regenerates what is still short | Whether it is worth the GPU |
-| `deft.publish(run_dir, run_id)` | Commits survivors as the next immutable version | Nothing — the gate decides what earns a label |
-| `deft.train(name, use_synthetic=…)` | Trains an inspector, registers it against the version | When, and whether this is the control |
+**You have no GPU and you never will.** This session is a control plane: you
+read state over the API and you enqueue work. Every stage that touches a GPU,
+or the shared cache, runs as a task on a queue. That is the design, not a
+limitation to work around — it is also why an agent driving this loop cannot
+exceed the permissions of whoever launched it.
 
-Each returns a dict. Read it — `generate` tells you what was actually delivered
-per class, `score` gives you the distribution, `improve` reports what the search
-bought and what it did not.
+### What you run locally — API reads only
 
-You can also import the stage modules directly and call them with arguments
-this file does not mention. `deft.py` is a convenience, not a fence.
+| Call | What it does |
+|---|---|
+| `deft.gap(target=60)` | The shortfall, from server-side label counts. ~1s, no pixels move. |
+| `deft.history()` | Every published version and registered model so far. |
+| `deft.queues()` | What queues actually exist here. |
+| `deft.pick_queue("gpu")` | Resolves a queue for a role, or refuses and asks. |
 
----
+### What you launch — everything else
+
+| Command | What you decide |
+|---|---|
+| `launch.py register` | Nothing; run it once. |
+| `launch.py train --baseline` | **Run this before generating anything.** It is the control. |
+| `launch.py generate --gap … --run-id …` | How many, of what. The run id must be unique. |
+| `launch.py evaluate --run-dir …` | The threshold, or let it default to the batch median. |
+| `launch.py improve --run-dir … --search-rounds N` | Whether the search is worth the GPU. |
+| `launch.py publish --run-dir …/searched --run-id …` | Nothing; the gate already decided what earns a label. |
+| `launch.py train --name inspector-roundN` | When. |
+
+Each prints a task id and a URL. Poll the task, read what it reported, then
+decide the next move from that — not from a plan you made before it ran.
+
+`deft.py` also exposes in-process functions with those names
+(`deft.generate(...)` and so on). **They are not for you.** They exist for code
+already running *inside* a task, which is how `run_rounds.py` uses them. Called
+from here they fail on a missing `/cache` with a message that reads like
+generation never happened.
 
 ## Rules you do not get to break
 
