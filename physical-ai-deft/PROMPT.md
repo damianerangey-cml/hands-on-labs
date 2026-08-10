@@ -7,39 +7,81 @@ you run once, on a server nobody has tried this on.
 
 ## 1. The agent kickoff — paste this into Claude Code running *in* the lab
 
-Launch the **Claude Code** app from the lab's Applications catalogue, with this
-repository as its Git source. Then paste:
+Launch the **Claude Code** app from the lab's Applications catalogue with this
+repository as its Git source. You need an Anthropic key in the launch form, or
+`claude login` from the session terminal.
 
-> You own the PCB inspection dataset in this ClearML lab. Read
-> `physical-ai-deft/AGENT.md` first — it is the operations contract, not a
-> script, and it lists the rules you do not get to break.
->
-> Goal: get every defect class to **60 examples**, using NVIDIA's Cosmos
-> AnomalyGen to generate what was never photographed. Budget: **3 rounds**, and
-> stop earlier if a round adds nothing.
->
-> Before you generate anything, train the control — a model on real images only
-> — or you will have nothing to compare against.
->
-> Each round: read the gap, decide what to ask for and why, generate, score
-> against the real examples, decide whether the result is worth improving, then
-> publish only what the gate accepted and train a model against that version.
->
-> Two things I care about more than the numbers. **Do not let the dataset claim
-> more than it has** — a frame gets its defect label from the gate, never from
-> your expectation. And **tell me what you decided and why**, including the
-> calls that did not pay off. The platform records what ran; it cannot record
-> your reasoning.
->
-> Report at the end: per round, the version, what you asked for, what the gate
-> accepted, and the model's accuracy against the baseline. If the holdout is too
-> small to resolve the difference, say so rather than reading a trend into it.
+Then **two pastes, in this order.** Do not merge them. You get one chance to
+bound the agent's behaviour before it starts improvising, and every line of
+paste 1 is there because of something that actually went wrong:
 
-That is the whole demo. The agent decides the allocation, the parameters, the
-retries and the stopping point; the scaffold stops it getting the mechanics
-silently wrong.
+| Line | The failure it prevents |
+|---|---|
+| use `/usr/local/bin/python3` | The image ships two Pythons and `PATH` has the bare one. An agent spent three commands "repairing" a container that was already fine. |
+| never delete under `/usr/local` | One did `rm -rf /usr/local/lib/python3.11` — site-packages, containing the only `clearml`. It half-worked, so the damage was invisible until the shell died. |
+| label VERIFIED / INFERRED | One reported three green ticks, including "HyperDatasets: Enterprise-grade", while unable to run a line of code. Its evidence was that *our own source* calls those endpoints. |
+| don't guess queues | A queue nobody serves accepts the task and holds it forever. Ten seconds of asking beats a demo that hangs. |
+| stop before launching | So you can check all of the above before it spends a GPU. |
 
-**A fair thing to try, live:** ask it something the grid cannot answer —
+### Paste 1 — ground rules and proof of life
+
+```
+You are the control plane for an NVIDIA Cosmos AnomalyGen pipeline on this
+ClearML server. You have no GPU and you never will: you read state over the
+API and you enqueue work onto GPU queues. Nothing heavy runs where you are.
+
+SETUP
+
+1. Use /usr/local/bin/python3 for everything. It owns this container's
+   packages, including clearml. Do NOT use plain `python3` -- that is a
+   different, bare interpreter that loads the wrong stdlib and dies with
+   "assert _sre.MAGIC == MAGIC  # SRE module mismatch".
+   Verify: /usr/local/bin/python3 -c "import clearml; print(clearml.__version__)"
+
+2. Do not create a venv, do not pip-install into system Python, and never
+   delete anything under /usr/local or /usr/lib. If an import fails, find the
+   interpreter that already owns the packages -- do not repair one.
+
+3. If the repository is not already here, clone
+   https://github.com/damianerangey-cml/hands-on-labs
+   Then read physical-ai-deft/AGENT.md completely. It is the operations
+   contract, including the rules you do not get to break.
+
+REPORT BACK -- and label every claim VERIFIED, INFERRED or UNKNOWN.
+VERIFIED means you called it and saw the response. Reading this repository's
+source is not evidence about this server.
+
+   a. Can you import clearml and reach the API? Which server?
+   b. deft.queues() -- the real list, verbatim.
+   c. deft.gap() -- this both proves HyperDatasets exist and tells us what is
+      missing. If it fails, show me the error rather than interpreting it.
+   d. Which queue should serve each role: gpu (a whole card, 24 GB is enough),
+      cpu (no GPU), gpu48 (48 GB or more, optional -- only the fine-tune needs
+      it)? If you cannot tell from the names, say so and ask. Do not guess:
+      enqueueing to a queue nobody serves is accepted silently and then waits
+      forever.
+
+If you cannot execute code at all, say that FIRST and stop. A report of green
+ticks from an agent that ran nothing is worse than no report.
+
+Then STOP. Do not launch a pipeline stage yet.
+```
+
+### Paste 2 — the goal
+
+Only once paste 1 comes back clean:
+
+```
+Get every defect class to 60 examples using NVIDIA's Cosmos AnomalyGen.
+Budget: 3 rounds, and stop earlier if a round adds nothing.
+
+Train the control on real images only before you generate anything.
+
+Tell me what you decided and why, including the calls that did not pay
+off. And do not let the dataset claim more than it has.
+```
+
+**A fair thing to try live:** ask it something the grid cannot answer —
 *"`excess_solder` keeps scoring worst. Work out whether that is fixable, and if
 it is not, stop spending GPU on it."*
 
