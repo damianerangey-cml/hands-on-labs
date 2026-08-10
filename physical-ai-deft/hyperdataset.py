@@ -139,17 +139,33 @@ def frame_meta(*, origin: str, texture: str | None = None,
 
 
 # --------------------------------------------------------------- dataset ----
-def get_or_create_dataset(name: str, tags: list[str] | None = None) -> str:
-    """Dataset id for `name`, creating it only if it is not already there.
+def find_dataset(name: str) -> str | None:
+    """Dataset id for `name`, or None. Creates nothing.
 
-    Idempotent on purpose: every pass of the loop calls this, and a second
-    dataset with the same name would silently split the version history in two.
+    Split out from `get_or_create_dataset` so the READ verbs can stay reads.
+    `deft.gap()` is documented as a cheap question you may ask on every pass --
+    but asking it on a server that has never run this lab used to leave an
+    empty HyperDataset behind, which on a shared server is somebody else's
+    stray object. Observed exactly that way round, by an agent following its
+    instructions correctly.
     """
     found = _call("get_all", {"name": "^%s$" % name, "page": 0,
                               "page_size": 10}).get("datasets") or []
     for d in found:
         if d.get("name") == name:
             return d["id"]
+    return None
+
+
+def get_or_create_dataset(name: str, tags: list[str] | None = None) -> str:
+    """Dataset id for `name`, creating it only if it is not already there.
+
+    Idempotent on purpose: every pass of the loop calls this, and a second
+    dataset with the same name would silently split the version history in two.
+    """
+    existing = find_dataset(name)
+    if existing:
+        return existing
     created = _call("create", {"name": name, "tags": list(tags or [])})
     ds_id = created.get("id")
     if not ds_id:

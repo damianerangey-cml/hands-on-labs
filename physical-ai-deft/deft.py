@@ -59,6 +59,12 @@ def _ds():
     return hd, hd.get_or_create_dataset(DATASET)
 
 
+def _ds_ro():
+    """(module, dataset_id_or_None) -- for the READ verbs. Creates nothing."""
+    import hyperdataset as hd
+    return hd, hd.find_dataset(DATASET)
+
+
 # ---- queues: DISCOVER, do not assume -------------------------------------
 # The names below are what the HOL labs happen to call things. On any other
 # ClearML server they are wrong, and enqueueing to a queue that does not exist
@@ -116,13 +122,16 @@ def pick_queue(kind="gpu"):
 
     Order: the DEFT_QUEUE_* env var if set (this is how an agent RECORDS an
     answer it got from a human, so it only has to ask once), then the HOL
-    default if that queue actually exists on this server.
+    default if that queue actually exists on this server -- exactly, or
+    differing only in case.
 
     Otherwise it raises with the list of real queues and the question to ask.
-    Deliberately no fuzzy matching on names like "gpu" -- a queue called
-    `gpu-shared` might be eight fractional slices of one card, which is exactly
-    the wrong place to send a fine-tune, and the server does not expose enough
-    to tell. Ask the human; they know their cluster.
+    Deliberately no fuzzy matching beyond case: a queue called `gpu-shared`
+    might be eight fractional slices of one card, which is exactly the wrong
+    place to send a fine-tune, and the server does not expose enough to tell.
+    Case alone is safe because it cannot change WHICH queue you mean -- and it
+    is worth handling, because a server whose queue reads `1xGPU` against a
+    default of `1XGPU` produced a refusal that looked like a missing queue.
     """
     import os as _os
     env = _os.environ.get(_QUEUE_ENV[kind])
@@ -132,6 +141,9 @@ def pick_queue(kind="gpu"):
     default = _QUEUE_FALLBACK[kind]
     if default in have:
         return default
+    ci = [n for n in have if n.lower() == default.lower()]
+    if len(ci) == 1:
+        return ci[0]
     want = {
         "gpu":   "a whole GPU (24 GB is enough)",
         "cpu":   "no GPU -- coordination work only",
@@ -156,11 +168,18 @@ def gap(target=60):
     target -- generating more of what you have enough of is the waste the
     method exists to avoid.
     """
-    hd, ds_id = _ds()
-    v = hd.latest_published(ds_id)
+    hd, ds_id = _ds_ro()
+    v = hd.latest_published(ds_id) if ds_id else None
     if not v:
+        # Two different nothings, and an agent must not conflate them: no
+        # dataset at all means `register` has never run here, whereas a dataset
+        # with no published version means it ran and nothing was committed.
         return {"version": None, "version_id": None, "counts": {}, "gap": {},
-                "at_target": []}
+                "at_target": [],
+                "dataset": ds_id,
+                "note": ("no HyperDataset %r on this server -- run register first"
+                         % DATASET) if not ds_id else
+                        "dataset exists but has no published version yet"}
     counts = hd.stats(v["id"])["labels"]
     short = {k: target - n for k, n in counts.items()
              if k not in HOUSEKEEPING and n < target}
@@ -175,11 +194,12 @@ def history():
     For a restarted agent: this is how you find out what a previous you already
     did, without a local file and without trusting your own notes.
     """
-    hd, ds_id = _ds()
+    hd, ds_id = _ds_ro()
     from clearml import Model
     versions = hd._call("get_versions", {"dataset": ds_id, "only_published": True,
                                          "page": 0, "page_size": 200}
-                        ).get("versions") or []
+                        ).get("versions") if ds_id else None
+    versions = versions or []
     versions.sort(key=lambda v: v.get("created") or "")
     out_v = [{"name": v.get("name"), "id": v["id"], "created": v.get("created")}
              for v in versions]
