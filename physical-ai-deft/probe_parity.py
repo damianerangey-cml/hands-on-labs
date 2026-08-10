@@ -20,12 +20,12 @@ The probe checks all four, plus the two credentials the real images need:
 
 Usage (credentials come from the lab's provision result):
 
-    export CLEARML_API_HOST=https://api.clearml-hol.com
-    export CLEARML_WEB_HOST=https://app.clearml-hol.com
-    export CLEARML_FILES_HOST=https://files.clearml-hol.com
-    export CLEARML_API_ACCESS_KEY=...      # lab admin key
+    export CLEARML_API_HOST=https://api.your-clearml.example
+    export CLEARML_WEB_HOST=https://app.your-clearml.example
+    export CLEARML_FILES_HOST=https://files.your-clearml.example
+    export CLEARML_API_ACCESS_KEY=...
     export CLEARML_API_SECRET_KEY=...
-    python probe_parity.py --queue 0.25XGPU
+    python probe_parity.py --queue <your GPU queue>
 
 A FAIL here is not a bug in the probe -- it is the pod-template item the lab
 recipe still has to set. That is the point.

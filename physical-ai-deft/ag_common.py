@@ -96,6 +96,6 @@ def require_hf_token():
     """Every stage needs it; none should accept it as a task argument."""
     if not os.environ.get("HF_TOKEN"):
         raise SystemExit(
-            "HF_TOKEN not set. It should arrive from the namespace "
-            "`lab-credentials` Secret -- fix the Secret rather than passing it "
+            "HF_TOKEN not set. It should arrive from your platform's "
+            "secret store -- fix that rather than passing it "
             "as a task argument, which would write it onto the task record.")

@@ -52,7 +52,7 @@ PROJECT = os.environ.get("DEFT_PROJECT", "Physical AI Inspection")
 # Cosmos Reason 2 (2B): NVIDIA's reasoning VLM, small enough to share an A10G
 # with a container pull and still answer quickly. Entitlement is on the lab's
 # NGC key; the image pull uses the namespace's registry secret, NOT this key --
-# see the recipe's `lab-credentials` note.
+# it must reach the pod from your platform's secret store.
 COSMOS_REASON = "nvcr.io/nim/nvidia/cosmos-reason2-2b:1.7.0"
 
 # NIM images ship with NVIDIA's INTERNAL pip index baked into their pip config

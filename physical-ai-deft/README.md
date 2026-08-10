@@ -67,12 +67,15 @@ two records can't drift.
 ## Credentials
 
 `NGC_KEY` and `HF_TOKEN` are **never** passed as task parameters — task
-parameters are readable by anyone with project access. They are injected into
-task pods from the lab namespace's Kubernetes Secret. `probe_parity.py` checks
-they are present without printing them.
+parameters are readable by anyone with project access. They should reach the
+task pod from wherever your platform keeps secrets -- a Kubernetes Secret
+projected by the agent's pod template, a vault sidecar, whatever you already
+use. `probe_parity.py` checks they are present without printing them.
 
 ---
 
-These scripts are **pre-seeded** by the HOL orchestrator as ClearML tasks that
-reference this folder by commit — but there's nothing hidden: it's ordinary
-Python you can read, run, and modify.
+In the hands-on lab these scripts arrive **pre-seeded** as ClearML tasks that
+reference this folder by commit — but there's nothing hidden and nothing
+lab-specific: it's ordinary Python against the ClearML SDK, and it runs on any
+ClearML server you point it at. `AGENT.md` is the operations contract, and it
+assumes nothing about your queues, your hardware, or your naming.

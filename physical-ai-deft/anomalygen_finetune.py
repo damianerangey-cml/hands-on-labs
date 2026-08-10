@@ -105,9 +105,10 @@ def anomalygen_finetune(dataset_name="pcb-uc1",
     if not os.environ.get("HF_TOKEN"):
         raise SystemExit(
             "HF_TOKEN not set. Phase 0 refuses to start without it, and the "
-            "Cosmos-Predict2 weights are gated. It should arrive from the "
-            "namespace `lab-credentials` Secret -- if it has not, fix the "
-            "Secret rather than passing it as a task argument.")
+            "Cosmos-Predict2 weights are gated. It should reach this pod from "
+            "wherever your platform keeps secrets -- fix that rather than "
+            "passing the token as a task argument, which would write it in "
+            "clear text onto the task record for anyone with project access.")
 
     ckpt_dir = os.path.join(CACHE, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)

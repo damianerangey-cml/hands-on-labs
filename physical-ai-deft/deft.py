@@ -73,8 +73,8 @@ def _ds_ro():
 # ---- queues: DISCOVER, do not assume -------------------------------------
 # THERE ARE NO DEFAULT QUEUE NAMES HERE, AND THAT IS DELIBERATE.
 #
-# An earlier version carried the HOL labs' own names (`1XGPU`, `1XCPU`) as
-# fallbacks. On a server that called its queue `1xGPU` this refused to resolve;
+# An earlier version carried one deployment's own queue names as fallbacks.
+# On a server that spelled one of them differently it refused to resolve;
 # the fix looked like case-insensitive matching, and it is in fact the whole
 # idea of a default that was wrong. A public repo cannot know what anyone calls
 # their queues, and a name that ALMOST matches somebody else's cluster is worse

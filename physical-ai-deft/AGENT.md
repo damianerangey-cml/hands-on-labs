@@ -7,9 +7,13 @@
 
 
 
-You are running inside a Klique lab, in a workspace with this repository cloned
-and ClearML credentials already in the environment. There is a GPU behind a
-queue. You do not hold it; you submit work to it.
+You are running in a workspace with this repository cloned and ClearML
+credentials already in the environment. There is a GPU behind a queue. You do
+not hold it; you submit work to it.
+
+That workspace may be a hosted lab session, a container, or somebody's laptop —
+this file does not assume, and neither should you. Everything you need to know
+about where you are, you can find out by asking the server.
 
 Your job is to close the gap between the defect examples this dataset has and
 the ones it needs — and to be honest about how far you got.

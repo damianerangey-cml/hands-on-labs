@@ -154,8 +154,9 @@ def anomalygen_generate(dataset_name="pcb-uc1",
 
     task = Task.current_task()
     if not os.environ.get("HF_TOKEN"):
-        raise SystemExit("HF_TOKEN not set -- it should arrive from the "
-                         "namespace `lab-credentials` Secret.")
+        raise SystemExit("HF_TOKEN not set -- it should reach this pod from "
+                         "wherever your platform keeps secrets, never as a "
+                         "task argument.")
 
     ckpt_dir = os.path.join(CACHE, "checkpoints")
     os.makedirs(ckpt_dir, exist_ok=True)

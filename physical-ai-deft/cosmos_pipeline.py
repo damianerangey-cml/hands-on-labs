@@ -55,8 +55,10 @@ def _queue(kind):
     import deft
     return deft.pick_queue(kind)
 
-# Cosmos-Predict2 needs CUDA 12.x + a recent diffusers. This image is the one
-# proven on the deft NodePool (driver 580); see the PRD for the trail.
+# Cosmos-Predict2 needs CUDA 12.x and a recent diffusers. This tag was the one
+# that worked against an NVIDIA driver in the 5xx series; if your driver is
+# older, the image will import and then fail inside CUDA, which reads like a
+# model problem rather than a driver one.
 GPU_IMAGE = "nvcr.io/nvidia/pytorch:25.01-py3"
 CPU_PACKAGES = ["clearml", "huggingface_hub", "pillow"]
 GPU_PACKAGES = ["clearml", "diffusers>=0.39", "transformers", "accelerate",
@@ -65,8 +67,8 @@ GPU_PACKAGES = ["clearml", "diffusers>=0.39", "transformers", "accelerate",
 # The steps import `hyperdataset` from this repo. add_function_step serialises
 # the function BODY only -- module globals and sibling imports do not travel --
 # so a step that needs a module has to clone the repo it lives in. No commit
-# pin: a push to main changes what the next run executes, which is the intended
-# behaviour for lab code (see the HOL lab-examples convention).
+# pin: a push to main changes what the next run executes, which is intended for
+# teaching code and is exactly wrong for production -- pin a commit there.
 REPO = "https://github.com/damianerangey-cml/hands-on-labs.git"
 REPO_BRANCH = "main"
 WORKDIR = "physical-ai-deft"
@@ -457,8 +459,8 @@ def _gpu_docker_args():
     """Container args for the Cosmos step.
 
     Note what is NOT here: HF_TOKEN. On a physical-ai-deft lab the token (and
-    NGC_KEY) arrive in the task pod's environment from the namespace
-    `lab-credentials` Secret, wired by the recipe's queue_overrides. Passing a
+    NGC_KEY) arrive in the task pod's environment from whatever secret
+    store your platform uses, projected in. Passing a
     credential through docker_args instead would write it onto the TASK RECORD,
     where anyone with project access can read it -- and it shows up verbatim in
     the Execution tab, which is how it ended up needing to be redacted out of a
