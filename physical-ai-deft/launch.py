@@ -115,7 +115,21 @@ STAGES = {
 }
 
 
-def launch(stage, queue=None, env=None):
+def launch(stage, queue=None, env=None, dry_run=False):
+    """Create the task and enqueue it. With dry_run, create it and stop.
+
+    A dry run is the cheapest useful test on a server nobody has run this on.
+    It exercises everything that is easy to get wrong and invisible until a task
+    fails ten minutes later -- the repository URL the agent will clone, the
+    branch, the script path inside it, the image, and above all whether the
+    queue for this role is known -- while spending no GPU, pulling no image and
+    creating no data. What you get is a DRAFT task you can read in the UI and
+    then enqueue or delete by hand.
+
+    It is deliberately not a print-only preview: `Task.create` is where a bad
+    repo URL or an unreachable script path actually surfaces, and a preview that
+    skipped it would report success for a task that cannot run.
+    """
     from clearml import Task
 
     script, name, ttype, default_queue = STAGES[stage]
@@ -144,10 +158,19 @@ def launch(stage, queue=None, env=None):
     else:
         import deft
         q = deft.pick_queue(default_queue)
-    Task.enqueue(task, queue_name=q)
+
     print("task   %s" % task.id)
-    print("queue  %s" % q)
+    print("repo   %s @ %s" % (REPO, BRANCH))
+    print("script %s/%s" % (WORKDIR, script))
     print("image  %s" % IMAGE)
+    print("queue  %s%s" % (q, "  (%s)" % default_queue))
+    if dry_run:
+        print("")
+        print("DRY RUN -- not enqueued. The task is a draft; enqueue it from the")
+        print("UI or delete it. Nothing was pulled and no GPU was spent.")
+        print("read   %s" % task.get_output_log_web_page())
+        return task.id
+    Task.enqueue(task, queue_name=q)
     print("watch  %s" % task.get_output_log_web_page())
     return task.id
 
@@ -192,6 +215,12 @@ def main():
                    help="train stage only: model name (default inspector, or "
                         "inspector-baseline with --baseline)")
     p.add_argument("--queue", default=None, help="override the stage's queue")
+    p.add_argument("--dry-run", action="store_true",
+                   help="create the task and STOP -- do not enqueue. Proves the "
+                        "repo, branch, script path, image and queue all resolve "
+                        "on this server, without spending a GPU or pulling an "
+                        "image. Leaves a draft task you can read, then enqueue "
+                        "or delete.")
     a = p.parse_args()
 
     env = {}
@@ -228,7 +257,7 @@ def main():
                 p.error("--gap wants label:count pairs, e.g. "
                         "bridge:52,excess_solder:44 (got %r)" % pair)
         env["DEFT_GAP"] = a.gap.replace(" ", "")
-    launch(a.stage, queue=a.queue, env=env)
+    launch(a.stage, queue=a.queue, env=env, dry_run=a.dry_run)
 
 
 if __name__ == "__main__":
