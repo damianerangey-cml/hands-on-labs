@@ -28,7 +28,7 @@ from run_stage import run_stage
 run_stage(
     image=AG_IMAGE,
     command="${ANOMALYGEN_SCRIPTS}/run_sdg.sh --checkpoint_dir ... --step ...",
-    queue="1XGPU",
+    queue=deft.pick_queue("gpu"),
     stage="anomalygen",
     iteration="iter1",
     workdir="/workspace/paidf-anomalygen",
@@ -47,14 +47,14 @@ command this runbook does not cover, pass it through `deft_stages.stage()`.
 
 ### Which queue
 
-**Every GPU stage goes to `1XGPU` -- a whole A10G.** This lab deliberately does
+**Every GPU stage goes to a WHOLE card, never a fraction.** This lab deliberately does
 not use fractional GPU: TAO and Cosmos containers want a full card, and a
 whole-card pool is free to run whatever CUDA version the images need.
 
 | Stage | Queue |
 |---|---|
-| `anomalygen` (Cosmos SDG diffusion), `train`, `evaluate`, `inference`, `data_mining` | `1XGPU` |
-| `anomalygen_prep` (AMP routing -- ~10s, no diffusion) | `1XCPU` |
+| `anomalygen` (Cosmos SDG diffusion), `train`, `evaluate`, `inference`, `data_mining` | `pick_queue("gpu")` |
+| `anomalygen_prep` (AMP routing -- ~10s, no diffusion) | `pick_queue("cpu")` |
 
 One consequence to plan around: stages run **one at a time**. Do not try to
 parallelise iterations to "save time" -- there is one card. If a stage OOMs,

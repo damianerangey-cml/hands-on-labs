@@ -101,8 +101,9 @@ Fill in the four bracketed values first; the session will ask otherwise.
 >
 > Our setup:
 > - ClearML server: `[https://app.example.com]`, credentials in `[~/clearml.conf]`
-> - Whole-GPU queue: `[1XGPU]`, backed by `[an A10G, 24 GB, driver 580]`
-> - CPU queue: `[1XCPU]`
+> - Whole-GPU queue: `[your queue name]`, backed by `[an A10G, 24 GB, driver 580]`
+> - CPU queue: `[your queue name]`
+> - 48 GB queue: `[your queue name, or "none" -- only the fine-tune needs it]`
 > - `NGC_API_KEY` and `HF_TOKEN` are projected into task pods from a Kubernetes
 >   Secret — do **not** pass them as task parameters or docker args
 > - Shared model cache at `[/cache]` on every task pod

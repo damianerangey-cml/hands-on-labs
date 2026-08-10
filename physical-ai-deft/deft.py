@@ -47,8 +47,13 @@ that survives its own driver and one that does not.
 """
 import os
 
+# These three ARE defaults, and unlike queue names they should be: they name
+# this lab's own content, not your cluster. "PCB Inspection" is what the lab
+# calls the thing it builds -- portable, because it does not have to match
+# anything that already exists on your server. A queue name has to.
 DATASET = os.environ.get("DEFT_HYPERDATASET", "PCB Inspection")
 UC = os.environ.get("DEFT_DATASET", "pcb-uc1")
+PROJECT = os.environ.get("DEFT_PROJECT", "Physical AI Inspection")
 
 # Housekeeping labels are not defect classes -- they must never look like a gap.
 HOUSEKEEPING = {"clean", "mask", "pending-review"}
@@ -66,23 +71,74 @@ def _ds_ro():
 
 
 # ---- queues: DISCOVER, do not assume -------------------------------------
-# The names below are what the HOL labs happen to call things. On any other
-# ClearML server they are wrong, and enqueueing to a queue that does not exist
-# fails in the least helpful way available -- the task sits in `queued` forever
-# with no error, because "no worker has picked this up yet" and "this queue is
-# not served by anything" look identical from the outside.
+# THERE ARE NO DEFAULT QUEUE NAMES HERE, AND THAT IS DELIBERATE.
 #
-# So: an agent must not assume. `queues()` reports what is actually there, with
-# the only two signals the server gives that are worth anything -- whether
-# anything is listening, and what it last ran. `pick_queue()` narrows it and
-# REFUSES rather than guessing when the answer is not obvious, because a silent
-# wrong guess costs a demo and a question costs ten seconds.
+# An earlier version carried the HOL labs' own names (`1XGPU`, `1XCPU`) as
+# fallbacks. On a server that called its queue `1xGPU` this refused to resolve;
+# the fix looked like case-insensitive matching, and it is in fact the whole
+# idea of a default that was wrong. A public repo cannot know what anyone calls
+# their queues, and a name that ALMOST matches somebody else's cluster is worse
+# than no name at all -- it turns "I need to ask" into "I found it", and the
+# thing it found may be eight fractional slices of one card.
+#
+# So the answer comes from the operator, once, and is then RECORDED:
+#
+#     env DEFT_QUEUE_{GPU,CPU,GPU48}   ->  set_queues() config file  ->  ask
+#
+# The config file matters more than it looks. An agent's `export FOO=bar` dies
+# with the shell that ran it, so an agent told to "set an env var" re-asks on
+# every command and eventually starts guessing again. Writing the answer down
+# is what makes asking a one-time cost.
 _QUEUE_ENV = {
     "gpu":   "DEFT_QUEUE_GPU",
     "cpu":   "DEFT_QUEUE_CPU",
     "gpu48": "DEFT_QUEUE_GPU48",
 }
-_QUEUE_FALLBACK = {"gpu": "1XGPU", "cpu": "1XCPU", "gpu48": "1xGPU-48GB"}
+_QUEUE_WANT = {
+    "gpu":   "a whole GPU (24 GB is enough) -- generation, scoring, training",
+    "cpu":   "no GPU -- coordination work only",
+    "gpu48": "a GPU with at least 48 GB, for the few-shot fine-tune (optional)",
+}
+CONF = os.path.expanduser(os.environ.get("DEFT_CONF", "~/.deft/config.json"))
+
+
+def config():
+    """Whatever has been recorded about this server. {} if nothing has."""
+    import json
+    try:
+        with open(CONF) as fh:
+            return json.load(fh)
+    except (OSError, ValueError):
+        return {}
+
+
+def set_queues(gpu=None, cpu=None, gpu48=None):
+    """Record which queue serves which role on THIS server. Ask once, keep it.
+
+    Every name is checked against the server before it is written -- recording
+    a typo would reproduce the exact failure this whole mechanism exists to
+    prevent, except now it would be durable.
+
+    Pass a role you do not have as None and it stays unset; `gpu48` is genuinely
+    optional, and a server with no 48 GB card should skip the fine-tune rather
+    than send it somewhere that cannot run it.
+    """
+    import json
+    have = {q["name"] for q in queues()}
+    want = {"gpu": gpu, "cpu": cpu, "gpu48": gpu48}
+    bad = {k: v for k, v in want.items() if v and v not in have}
+    if bad:
+        raise LookupError(
+            "No such queue on this server: %s\nQueues here: %s"
+            % (", ".join("%s=%r" % kv for kv in sorted(bad.items())),
+               ", ".join(sorted(have)) or "(none)"))
+    conf = config()
+    conf.setdefault("queues", {}).update(
+        {k: v for k, v in want.items() if v})
+    os.makedirs(os.path.dirname(CONF) or ".", exist_ok=True)
+    with open(CONF, "w") as fh:
+        json.dump(conf, fh, indent=2, sort_keys=True)
+    return conf["queues"]
 
 
 def queues():
@@ -120,40 +176,31 @@ def queues():
 def pick_queue(kind="gpu"):
     """Resolve the queue for `kind` ("gpu" | "cpu" | "gpu48"), or refuse.
 
-    Order: the DEFT_QUEUE_* env var if set (this is how an agent RECORDS an
-    answer it got from a human, so it only has to ask once), then the HOL
-    default if that queue actually exists on this server -- exactly, or
-    differing only in case.
-
-    Otherwise it raises with the list of real queues and the question to ask.
-    Deliberately no fuzzy matching beyond case: a queue called `gpu-shared`
+    Order: the DEFT_QUEUE_* env var, then whatever `set_queues()` recorded.
+    There is no third source -- no name is built in, and nothing is inferred
+    from a queue being called something GPU-ish. A queue named `gpu-shared`
     might be eight fractional slices of one card, which is exactly the wrong
-    place to send a fine-tune, and the server does not expose enough to tell.
-    Case alone is safe because it cannot change WHICH queue you mean -- and it
-    is worth handling, because a server whose queue reads `1xGPU` against a
-    default of `1XGPU` produced a refusal that looked like a missing queue.
+    place to send a fine-tune, and the API does not expose enough to tell them
+    apart. The operator knows their cluster; ten seconds of asking beats a task
+    that sits in `queued` forever looking like a slow start.
     """
-    import os as _os
-    env = _os.environ.get(_QUEUE_ENV[kind])
+    env = os.environ.get(_QUEUE_ENV[kind])
     if env:
         return env
-    have = {q["name"] for q in queues()}
-    default = _QUEUE_FALLBACK[kind]
-    if default in have:
-        return default
-    ci = [n for n in have if n.lower() == default.lower()]
-    if len(ci) == 1:
-        return ci[0]
-    want = {
-        "gpu":   "a whole GPU (24 GB is enough)",
-        "cpu":   "no GPU -- coordination work only",
-        "gpu48": "a GPU with at least 48 GB, for the few-shot fine-tune",
-    }[kind]
+    recorded = config().get("queues", {}).get(kind)
+    if recorded:
+        return recorded
+    have = sorted(q["name"] for q in queues())
     raise LookupError(
         "I do not know which queue to use for %s (%s).\n"
-        "Queues on this server: %s\n"
-        "Ask which one to use, then set %s=<name> so I stop asking."
-        % (kind, want, ", ".join(sorted(have)) or "(none)", _QUEUE_ENV[kind])
+        "\n"
+        "Queues on this server:\n  %s\n"
+        "\n"
+        "Ask which one, then record it so nobody has to answer twice:\n"
+        "  deft.set_queues(%s=\"<name>\")\n"
+        "(or export %s=<name> for a one-off)"
+        % (kind, _QUEUE_WANT[kind], "\n  ".join(have) or "(none)",
+           kind, _QUEUE_ENV[kind])
     )
 
 
@@ -206,7 +253,7 @@ def history():
     try:
         models = [{"name": m.name, "id": m.id,
                    "version": (m.get_metadata() or {}).get("version_id")}
-                  for m in Model.query_models(project_name="Physical AI Inspection")]
+                  for m in Model.query_models(project_name=PROJECT)]
     except Exception as e:
         models = [{"error": str(e)}]
     return {"versions": out_v, "models": models}

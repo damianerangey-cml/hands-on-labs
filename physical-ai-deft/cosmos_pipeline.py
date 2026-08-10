@@ -40,11 +40,20 @@ nothing. The loop declining to believe its own output is the property we want.
 
 Data source: nvidia/Cosmos-AnomalyGen-PCB-Dataset (public, ungated).
 """
+import os
+
 from clearml import PipelineController
 
-PROJECT = "Physical AI Inspection"
-CPU_QUEUE = "default"
-GPU_QUEUE = "1XGPU"
+PROJECT = os.environ.get("DEFT_PROJECT", "Physical AI Inspection")
+
+
+# NO QUEUE-NAME LITERALS ANYWHERE IN THIS REPO. `deft.pick_queue` is the single
+# place that decides, and it asks rather than guessing -- see AGENT.md. Resolved
+# lazily because it costs an API call, and `register_real()` (the only part of
+# this module still on the live path) enqueues nothing at all.
+def _queue(kind):
+    import deft
+    return deft.pick_queue(kind)
 
 # Cosmos-Predict2 needs CUDA 12.x + a recent diffusers. This image is the one
 # proven on the deft NodePool (driver 580); see the PRD for the trail.
@@ -463,6 +472,12 @@ def _gpu_docker_args():
 
 
 def main():
+    # Resolved here, not at import: this is the first point at which a queue
+    # name is actually needed, and `pick_queue` raises with the server's real
+    # list if nobody has said which is which yet.
+    CPU_QUEUE = _queue("cpu")
+    GPU_QUEUE = _queue("gpu")
+
     pipe = PipelineController(
         name="Physical AI Data Factory", project=PROJECT, version="0.2.0",
         add_pipeline_tags=True)

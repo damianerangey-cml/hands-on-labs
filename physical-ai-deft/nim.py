@@ -11,7 +11,8 @@ billed.
 
 So the scoring stage brings its own evaluator up, uses it, and stops it.
 
-    inst = launch(container=COSMOS_REASON, queue="1XGPU", max_idle_hours=1)
+    inst = launch(container=COSMOS_REASON, queue_name=deft.pick_queue("gpu"),
+                  max_idle_hours=1)
     url  = wait_ready(inst)
     ...  score frames ...
     stop(inst)
@@ -45,6 +46,8 @@ import base64
 import json
 import os
 import time
+
+PROJECT = os.environ.get("DEFT_PROJECT", "Physical AI Inspection")
 
 # Cosmos Reason 2 (2B): NVIDIA's reasoning VLM, small enough to share an A10G
 # with a container pull and still answer quickly. Entitlement is on the lab's
@@ -112,8 +115,8 @@ def launch_fields(app: str = "nim") -> list[str]:
 
 
 def launch(container: str = COSMOS_REASON,
-           queue_name: str = "1XGPU",
-           project: str = "Physical AI Inspection",
+           queue_name: str | None = None,   # None -> deft.pick_queue("gpu")
+           project: str = PROJECT,
            session_name: str = "Cosmos Reason (evaluator)",
            max_idle_hours: float = 1,
            env: dict | None = None,
@@ -135,7 +138,7 @@ def launch(container: str = COSMOS_REASON,
         "session_name": str(session_name),
         "project": str(project),
         "container": str(container),
-        "queue_name": str(queue_name),
+        "queue_name": str(queue_name or __import__("deft").pick_queue("gpu")),
         "max_idle_time_hour": str(max_idle_hours),   # declared string
         "run_as_root": True,                          # declared enumeration/bool
         "session_tags": ",".join(str(t) for t in (tags or ["deft", "evaluator"])),
@@ -177,8 +180,8 @@ def launch(container: str = COSMOS_REASON,
 def launch_via_container(container: str = COSMOS_REASON,
                          command_line: str = "bash /opt/nim/start_server.sh",
                          internal_port: int = 8000,
-                         queue_name: str = "1XGPU",
-                         project: str = "Physical AI Inspection",
+                         queue_name: str | None = None,   # None -> pick_queue
+                         project: str = PROJECT,
                          session_name: str = "Cosmos Reason (evaluator)",
                          max_idle_hours: float = 1,
                          env: dict | None = None,
@@ -230,7 +233,7 @@ def launch_via_container(container: str = COSMOS_REASON,
         "container": str(container),
         "command_line": str(command_line),
         "working_dir": "/opt/nim",
-        "queue_name": str(queue_name),
+        "queue_name": str(queue_name or __import__("deft").pick_queue("gpu")),
         "router_type": "http",
         "router_internal_port": int(internal_port),
         "max_idle_time_hour": str(max_idle_hours),

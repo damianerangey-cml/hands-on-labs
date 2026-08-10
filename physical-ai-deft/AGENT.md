@@ -55,23 +55,45 @@ deft.queues()          # what is actually here, and whether anything serves it
 deft.pick_queue("gpu") # resolves, or raises with the question to ask
 ```
 
-`pick_queue` deliberately does **not** guess from names. A queue called
-`gpu-shared` might be eight fractional slices of one card — exactly the wrong
-place to send a fine-tune — and the server does not expose enough to tell them
-apart. When it cannot resolve, it raises with the list of real queues and the
-question. **Ask it.** Ten seconds of a person's time beats a demo that hangs.
+**There are no built-in queue names**, and that is not an oversight. An earlier
+version of this file carried the original deployment's names as fallbacks; on a
+server that spelled one of them differently it refused, and the tempting fix —
+match more loosely — is the bug, not the cure. A name that almost matches
+somebody else's cluster turns *"I need to ask"* into *"I found it"*, and the
+thing it found may be eight fractional slices of one card.
+
+`pick_queue` also does not guess from names. A queue called `gpu-shared` might
+be exactly that, and the API does not expose enough to tell. When it cannot
+resolve, it raises with the real queue list and the question. **Ask it.** Ten
+seconds of a person's time beats a demo that hangs.
 
 Three roles to fill, and you may need one answer per role:
 
-| Role | What it needs | Record the answer as |
+| Role | What it needs | Optional? |
 |---|---|---|
-| `gpu` | a whole GPU, 24 GB is enough — generation, scoring, training | `DEFT_QUEUE_GPU` |
-| `cpu` | no GPU — registration and coordination | `DEFT_QUEUE_CPU` |
-| `gpu48` | **48 GB or more** — only the phase-1 fine-tune | `DEFT_QUEUE_GPU48` |
+| `gpu` | a whole GPU, 24 GB is enough — generation, scoring, training | no |
+| `cpu` | no GPU — registration and coordination | no |
+| `gpu48` | **48 GB or more** — only the phase-1 fine-tune | **yes** |
 
-Set the env var once you have the answer so you stop asking. If there is no
-48 GB queue at all, say so and skip the fine-tune — the rest of the pipeline
-runs on 24 GB and this lab has been demonstrating exactly that.
+Once you have the answers, **write them down**:
+
+```python
+deft.set_queues(gpu="...", cpu="...", gpu48="...")   # gpu48=None if there is none
+```
+
+It checks each name against the server before recording it — a typo saved to
+disk would reproduce the exact silent hang this is here to prevent, only
+permanently — and stores them in `~/.deft/config.json`.
+
+Use that rather than `export`. **Your shell does not survive between commands**:
+an env var you set in one call is gone by the next, so an agent told to export
+something re-asks forever and eventually starts guessing instead. The file is
+what makes asking a one-time cost. (`DEFT_QUEUE_GPU` and friends still work, and
+take precedence — they are for a deployment that wants to inject the answer, or
+for a one-off override.)
+
+If there is no 48 GB queue at all, say so and skip the fine-tune — the rest of
+the pipeline runs on 24 GB and this lab has been demonstrating exactly that.
 
 ### Everything else that is a local convention
 
@@ -233,6 +255,7 @@ exceed the permissions of whoever launched it.
 | `deft.history()` | Every published version and registered model so far. |
 | `deft.queues()` | What queues actually exist here. |
 | `deft.pick_queue("gpu")` | Resolves a queue for a role, or refuses and asks. |
+| `deft.set_queues(gpu=…, cpu=…)` | Records the answer, once, after checking it exists. |
 
 ### What you launch — everything else
 

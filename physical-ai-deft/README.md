@@ -40,7 +40,7 @@ docker daemon of its own.
 from deft_stages import anomalygen_sdg
 
 anomalygen_sdg(iteration="iter1", checkpoint_dir=CKPT, step=14000,
-               run_dir=RUN_DIR, queue="1XGPU")
+               run_dir=RUN_DIR, queue=deft.pick_queue("gpu"))
 ```
 
 The four `docker run` flags are not lost — they move into the lab's agent pod

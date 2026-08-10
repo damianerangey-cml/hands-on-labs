@@ -13,10 +13,11 @@ their own skills whose flags we do NOT restate here: the agent reads the
 matching reference at runtime and passes the command through `stage()`. That is
 deliberate. Restating another skill's CLI is how a wrapper silently goes stale.
 
-GPU SIZING. This lab runs stages on a WHOLE A10G (`1XGPU`), not a CFGI fraction.
-TAO and Cosmos containers want a full card, and a whole-card pool is free to run
-whatever CUDA version the images need -- TAO 6.26.3 is CUDA 13.0, which no
-fractional pool of ours can serve. The trade: one stage at a time per lab.
+GPU SIZING. Stages need a WHOLE card, not a fractional slice. TAO and Cosmos
+containers want a full GPU, and a whole-card pool is also free to run whatever
+CUDA version the images need -- TAO 6.26.3 is CUDA 13.0, which a fractional pool
+pinned to an older driver cannot serve. The trade: one stage at a time per lab.
+Which queue that is, is your cluster's business -- see `deft.pick_queue`.
 
 ASCII-only.
 """
@@ -47,12 +48,28 @@ AG_IMAGE = os.environ.get("AG_IMAGE", "nvcr.io/nv-metropolis-dev/metropolis-sdg/
 # from its own source tree -- see NVIDIA's reference. Do not export it host-side.
 AG_WORKDIR = "/workspace/paidf-anomalygen"
 
-# Whole card for every GPU stage (see module docstring). QUEUE_SMALL is kept as a
-# separate name so a future fractional-capable lab can point it elsewhere without
-# touching call sites; today it resolves to the same full-GPU queue.
-QUEUE_FULL = os.environ.get("DEFT_QUEUE_FULL", "1XGPU")
-QUEUE_SMALL = os.environ.get("DEFT_QUEUE_SMALL", QUEUE_FULL)
-QUEUE_CPU = os.environ.get("DEFT_QUEUE_CPU", "1XCPU")
+# Whole card for every GPU stage (see module docstring). "small" is kept as a
+# separate kind so a future fractional-capable lab can point it elsewhere
+# without touching call sites; today it resolves to the same full-GPU queue.
+#
+# NO QUEUE-NAME LITERALS. These defer to `deft.pick_queue`, which asks rather
+# than guessing -- a default here would be one deployment's naming shipped to
+# everyone else's cluster as though it were a fact.
+#
+# Called at USE time, not import time: every `queue=` below defaults to None and
+# resolves here, so importing this module costs nothing and a server that has
+# not been told its queue names fails at the point of enqueueing -- with the
+# real list and a question -- rather than on `import`.
+def _q(kind, override=None):
+    if override:
+        return override
+    env = os.environ.get({"gpu": "DEFT_QUEUE_FULL",
+                          "small": "DEFT_QUEUE_SMALL",
+                          "cpu": "DEFT_QUEUE_CPU"}[kind])
+    if env:
+        return env
+    import deft
+    return deft.pick_queue("cpu" if kind == "cpu" else "gpu")
 
 
 # --------------------------------------------------------------------------
@@ -65,7 +82,7 @@ def stage(command, stage_name, iteration, image=None, queue=None, workdir=None,
     Use this for rca / routing / data_mining: read the reference file, take the
     command it specifies, pass it here. run_stage() handles the rest."""
     return run_stage(
-        image=image or TAO_IMAGE, command=command, queue=queue or QUEUE_SMALL,
+        image=image or TAO_IMAGE, command=command, queue=_q('small', queue),
         stage=stage_name, iteration=iteration, workdir=workdir,
         workspace=workspace, wait=wait)
 
@@ -73,29 +90,29 @@ def stage(command, stage_name, iteration, image=None, queue=None, workdir=None,
 # --------------------------------------------------------------------------
 # visual changenet -- train / inference / evaluate
 # --------------------------------------------------------------------------
-def train(spec, iteration, queue=QUEUE_FULL, workspace=WORKSPACE, wait=True):
+def train(spec, iteration, queue=None, workspace=WORKSPACE, wait=True):
     """Fine-tune Visual ChangeNet (C-RADIOv2-B backbone) on this iteration's
     assembled training set. `spec` is the absolute path to the iteration's YAML
     inside the shared workspace."""
     return run_stage(
         image=TAO_IMAGE, command="visual_changenet train -e %s" % spec,
-        queue=queue, stage="train", iteration=iteration,
+        queue=_q('gpu', queue), stage="train", iteration=iteration,
         workspace=workspace, wait=wait)
 
 
-def inference(spec, iteration, queue=QUEUE_SMALL, workspace=WORKSPACE, wait=True):
+def inference(spec, iteration, queue=None, workspace=WORKSPACE, wait=True):
     return run_stage(
         image=TAO_IMAGE, command="visual_changenet inference -e %s" % spec,
-        queue=queue, stage="inference", iteration=iteration,
+        queue=_q('small', queue), stage="inference", iteration=iteration,
         workspace=workspace, wait=wait)
 
 
-def evaluate(spec, iteration, queue=QUEUE_SMALL, workspace=WORKSPACE, wait=True):
+def evaluate(spec, iteration, queue=None, workspace=WORKSPACE, wait=True):
     """Score the model against the KPI test set. The stage prints the FAR /
     recall summary that becomes the loop's headline scalar."""
     return run_stage(
         image=TAO_IMAGE, command="visual_changenet evaluate -e %s" % spec,
-        queue=queue, stage="evaluate", iteration=iteration,
+        queue=_q('small', queue), stage="evaluate", iteration=iteration,
         workspace=workspace, wait=wait)
 
 
@@ -103,7 +120,7 @@ def evaluate(spec, iteration, queue=QUEUE_SMALL, workspace=WORKSPACE, wait=True)
 # Cosmos AnomalyGen (Physical AI Data Factory) -- two phases per iteration
 # --------------------------------------------------------------------------
 def anomalygen_prep(iteration, dataset_dir, num_sdg, run_dir,
-                    queue=QUEUE_CPU, workspace=WORKSPACE, wait=True):
+                    queue=None, workspace=WORKSPACE, wait=True):
     """Phase 2: AMP routing -> testcase.jsonl. Cheap, no diffusion yet.
 
     Check allocation.json afterwards BEFORE paying for phase 3: AMP silently
@@ -116,12 +133,12 @@ def anomalygen_prep(iteration, dataset_dir, num_sdg, run_dir,
         "--amp-output-dir %s/amp --output-jsonl %s/testcase.jsonl"
         % (iteration, num_sdg, dataset_dir, dataset_dir, dataset_dir, run_dir, run_dir))
     return run_stage(
-        image=AG_IMAGE, command=cmd, queue=queue, stage="anomalygen_prep",
+        image=AG_IMAGE, command=cmd, queue=_q('cpu', queue), stage="anomalygen_prep",
         iteration=iteration, workdir=AG_WORKDIR, workspace=workspace, wait=wait)
 
 
 def anomalygen_sdg(iteration, checkpoint_dir, step, run_dir, model_size="2b",
-                   queue=QUEUE_FULL, workspace=WORKSPACE, wait=True):
+                   queue=None, workspace=WORKSPACE, wait=True):
     """Phase 3: the actual Cosmos diffusion pass -- generate the defects that do
     not exist in your real data. Full card: this is a 2B diffusion model plus a
     text encoder."""
@@ -132,5 +149,5 @@ def anomalygen_sdg(iteration, checkpoint_dir, step, run_dir, model_size="2b",
         "--model_size %s --num_gpus 1"
         % (checkpoint_dir, step, run_dir, run_dir, model_size))
     return run_stage(
-        image=AG_IMAGE, command=cmd, queue=queue, stage="anomalygen",
+        image=AG_IMAGE, command=cmd, queue=_q('gpu', queue), stage="anomalygen",
         iteration=iteration, workdir=AG_WORKDIR, workspace=workspace, wait=wait)

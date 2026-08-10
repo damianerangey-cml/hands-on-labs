@@ -14,7 +14,7 @@ the agent pulls the image, creates a pod from it, runs the command, and captures
 console / status / metrics / artifacts. So the substitution is one call:
 
     run_stage(image=AG_IMAGE, command="${ANOMALYGEN_SCRIPTS}/run_sdg.sh ...",
-              queue="1XGPU", stage="anomalygen", iteration=1)
+              queue=deft.pick_queue("gpu"), stage="anomalygen", iteration=1)
 
 The runbook (runbook/) is what tells the agent to call this instead of
 `docker run`. Nothing else about NVIDIA's loop changes.
@@ -82,7 +82,7 @@ def run_stage(
     command   -- the shell command to run INSIDE that container, verbatim from
                  NVIDIA's stage reference (everything after `bash -lc`)
     queue     -- which ClearML queue, i.e. how much GPU this stage gets
-                 ("1XGPU" for AnomalyGen diffusion, "0.5XGPU" for a retrain, ...)
+                 (resolve it with deft.pick_queue -- no name is built in)
     stage     -- DEFT stage name: train | evaluate | rca | anomalygen |
                  routing | data_mining
     iteration -- "baseline", "iter1", "iter2", ...
