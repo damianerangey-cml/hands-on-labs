@@ -230,11 +230,30 @@ def anomalygen_improve(dataset_name="pcb-uc1",
            "--defect-spec", defect_spec,
            "--model-size", model_size,
            "--anomaly-types", *anomaly_types]
-    if allocation:
-        # Keep the per-class split the gap asked for. Without this, phase 7
-        # backfills whatever is cheapest to regenerate and the round quietly
-        # stops honouring the shortfall it was built around.
-        cmd += ["--allocation", json.dumps(allocation)]
+    # KEEP THE PER-CLASS SPLIT THE GAP ASKED FOR. Without this, phase 7 tops up
+    # whatever is cheapest to regenerate and the round quietly stops honouring
+    # the shortfall it was built around.
+    #
+    # `--allocation` is a PATH, not inline JSON (`type=pathlib.Path`), and
+    # passing the dict as a string fails with a message that reads like a
+    # missing file because that is exactly what it is:
+    #
+    #     error: --allocation {"IC+bridge": 8, ...} not found
+    #
+    # NVIDIA's help text names the file it wants -- ag_inference/<name>/
+    # allocation.json -- and that is the file their own allocate_samples.py
+    # wrote back in phase 2 ("wrote .../allocation.json (mode=inference,
+    # sum=24)"). So the two halves of their pipeline already agree with each
+    # other; prefer their file and only write one if it is somehow absent.
+    alloc_path = os.path.join(CACHE, "ag_inference", dataset_name,
+                              "allocation.json")
+    if not os.path.exists(alloc_path) and allocation:
+        alloc_path = os.path.join(run_dir, "allocation.json")
+        with open(alloc_path, "w") as fh:
+            json.dump(allocation, fh)
+    if os.path.exists(alloc_path):
+        print("phase 7 tops up to %s" % alloc_path, flush=True)
+        cmd += ["--allocation", alloc_path]
     _run(cmd, env={"PYTORCH_ALLOC_CONF": "expandable_segments:True"})
 
     final_csv = os.path.join(searched_dir, "per_sample.csv")
