@@ -43,24 +43,24 @@ SETUP = "python3 -m pip install -q --no-input clearml scikit-learn"
 STAGES = {
     # No GPU: reads 177 files, writes frames.
     "register": ("register_real.py", "Register the real data (HyperDataset v1-real)",
-                 "data_processing", "1XCPU"),
+                 "data_processing", "cpu"),
     "rounds": ("run_rounds.py", "DEFT loop -- generate, score, publish, train",
-               "training", "1XGPU"),
+               "training", "gpu"),
     "generate": ("anomalygen_generate.py", "AnomalyGen -- place masks and generate",
-                 "data_processing", "1XGPU"),
+                 "data_processing", "gpu"),
     "evaluate": ("anomalygen_evaluate.py", "AnomalyGen -- score against the real data",
-                 "data_processing", "1XGPU"),
+                 "data_processing", "gpu"),
     # The 48 GB lane. NVIDIA's phase 1 wants 4.54 GiB more than a 24 GB card
     # has, so it targets a queue wired to its own NodePool of g6e.* machines.
     # Expect a ~10 min cold start: that pool has no prewarm and no keepalive, so
     # the card is created when this task asks for it and released after.
     "finetune": ("anomalygen_finetune.py",
                  "AnomalyGen phase 1 -- few-shot fine-tune (48GB)",
-                 "training", "1xGPU-48GB"),
+                 "training", "gpu48"),
     "improve": ("anomalygen_improve.py",
                 "AnomalyGen -- search, keep best, filter and regenerate",
-                "data_processing", "1XGPU"),
-    "train": ("train_inspector.py", "Train the inspector", "training", "1XGPU"),
+                "data_processing", "gpu"),
+    "train": ("train_inspector.py", "Train the inspector", "training", "gpu"),
 }
 
 
@@ -83,7 +83,16 @@ def launch(stage, queue=None, env=None):
         docker_args=" ".join(docker_args),
         docker_bash_setup_script=SETUP)
 
-    q = queue or default_queue
+    # RESOLVE, do not assume. `default_queue` is a KIND ("gpu"/"cpu"/"gpu48"),
+    # not a name -- the names in this repo are the HOL labs' own and are wrong
+    # on any other server. deft.pick_queue() checks what actually exists and
+    # raises a question rather than enqueueing into a queue nobody serves,
+    # which would otherwise sit in `queued` forever looking like a slow start.
+    if queue:
+        q = queue
+    else:
+        import deft
+        q = deft.pick_queue(default_queue)
     Task.enqueue(task, queue_name=q)
     print("task   %s" % task.id)
     print("queue  %s" % q)

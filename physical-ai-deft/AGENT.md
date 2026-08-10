@@ -32,6 +32,46 @@ trusting them over the server.
 
 ---
 
+## You are probably not on the server this was built on
+
+This repository was written against one particular ClearML deployment. Its queue
+names, its dataset name and its GPU sizes are **local conventions, not facts**.
+Assuming them somewhere else fails in the worst available way: enqueueing to a
+queue nobody serves is accepted silently and then sits in `queued` forever,
+because "no worker has picked this up yet" and "this queue does not exist" look
+identical from outside.
+
+So before the first launch:
+
+```python
+deft.queues()          # what is actually here, and whether anything serves it
+deft.pick_queue("gpu") # resolves, or raises with the question to ask
+```
+
+`pick_queue` deliberately does **not** guess from names. A queue called
+`gpu-shared` might be eight fractional slices of one card — exactly the wrong
+place to send a fine-tune — and the server does not expose enough to tell them
+apart. When it cannot resolve, it raises with the list of real queues and the
+question. **Ask it.** Ten seconds of a person's time beats a demo that hangs.
+
+Three roles to fill, and you may need one answer per role:
+
+| Role | What it needs | Record the answer as |
+|---|---|---|
+| `gpu` | a whole GPU, 24 GB is enough — generation, scoring, training | `DEFT_QUEUE_GPU` |
+| `cpu` | no GPU — registration and coordination | `DEFT_QUEUE_CPU` |
+| `gpu48` | **48 GB or more** — only the phase-1 fine-tune | `DEFT_QUEUE_GPU48` |
+
+Set the env var once you have the answer so you stop asking. If there is no
+48 GB queue at all, say so and skip the fine-tune — the rest of the pipeline
+runs on 24 GB and this lab has been demonstrating exactly that.
+
+Other things worth confirming rather than assuming, in the same spirit: the
+HyperDataset name (`DEFT_HYPERDATASET`, default "PCB Inspection"), whether the
+server has HyperDatasets at all, and whether task pods get a shared cache path
+(`DEFT_CACHE`, default `/cache`) — without one, every stage re-downloads 22 GB
+of checkpoints, which is slow rather than wrong.
+
 ## The operations
 
 | Call | What it does | What you decide |

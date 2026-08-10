@@ -59,6 +59,92 @@ def _ds():
     return hd, hd.get_or_create_dataset(DATASET)
 
 
+# ---- queues: DISCOVER, do not assume -------------------------------------
+# The names below are what the HOL labs happen to call things. On any other
+# ClearML server they are wrong, and enqueueing to a queue that does not exist
+# fails in the least helpful way available -- the task sits in `queued` forever
+# with no error, because "no worker has picked this up yet" and "this queue is
+# not served by anything" look identical from the outside.
+#
+# So: an agent must not assume. `queues()` reports what is actually there, with
+# the only two signals the server gives that are worth anything -- whether
+# anything is listening, and what it last ran. `pick_queue()` narrows it and
+# REFUSES rather than guessing when the answer is not obvious, because a silent
+# wrong guess costs a demo and a question costs ten seconds.
+_QUEUE_ENV = {
+    "gpu":   "DEFT_QUEUE_GPU",
+    "cpu":   "DEFT_QUEUE_CPU",
+    "gpu48": "DEFT_QUEUE_GPU48",
+}
+_QUEUE_FALLBACK = {"gpu": "1XGPU", "cpu": "1XCPU", "gpu48": "1xGPU-48GB"}
+
+
+def queues():
+    """Every queue on this server, with whatever tells them apart.
+
+    Returns a list of {name, id, workers, queued}.
+
+    DO NOT READ `workers == 0` AS "NOTHING SERVES THIS". It is a useful signal
+    on a stock ClearML deployment and a LIE on some enterprise ones: where
+    queues are fronted by a resource pool, the agent listens on an internal
+    `resource_link_<uuid>` queue and the friendly name shows zero workers while
+    being perfectly well served. Measured on the deployment this was written
+    against -- every queue reported 0 workers while tasks ran on all of them.
+
+    So treat this as evidence, not proof, and prefer asking a human over
+    concluding a queue is dead.
+    """
+    from clearml.backend_api.session.client import APIClient
+    c = APIClient()
+    out = []
+    for q in c.queues.get_all():
+        workers = list(getattr(q, "workers", None) or [])
+        entries = list(getattr(q, "entries", None) or [])
+        out.append({
+            "name": q.name,
+            "id": q.id,
+            "workers": len(workers),
+            "queued": len(entries),
+            "worker_names": [getattr(w, "key", None) or getattr(w, "name", "?")
+                             for w in workers][:4],
+        })
+    return sorted(out, key=lambda d: d["name"])
+
+
+def pick_queue(kind="gpu"):
+    """Resolve the queue for `kind` ("gpu" | "cpu" | "gpu48"), or refuse.
+
+    Order: the DEFT_QUEUE_* env var if set (this is how an agent RECORDS an
+    answer it got from a human, so it only has to ask once), then the HOL
+    default if that queue actually exists on this server.
+
+    Otherwise it raises with the list of real queues and the question to ask.
+    Deliberately no fuzzy matching on names like "gpu" -- a queue called
+    `gpu-shared` might be eight fractional slices of one card, which is exactly
+    the wrong place to send a fine-tune, and the server does not expose enough
+    to tell. Ask the human; they know their cluster.
+    """
+    import os as _os
+    env = _os.environ.get(_QUEUE_ENV[kind])
+    if env:
+        return env
+    have = {q["name"] for q in queues()}
+    default = _QUEUE_FALLBACK[kind]
+    if default in have:
+        return default
+    want = {
+        "gpu":   "a whole GPU (24 GB is enough)",
+        "cpu":   "no GPU -- coordination work only",
+        "gpu48": "a GPU with at least 48 GB, for the few-shot fine-tune",
+    }[kind]
+    raise LookupError(
+        "I do not know which queue to use for %s (%s).\n"
+        "Queues on this server: %s\n"
+        "Ask which one to use, then set %s=<name> so I stop asking."
+        % (kind, want, ", ".join(sorted(have)) or "(none)", _QUEUE_ENV[kind])
+    )
+
+
 def gap(target=60):
     """What each defect class is short of, and what is there now.
 
