@@ -94,6 +94,41 @@ Two things are **not** parameterised and you should know why:
   weights. A different use case needs different weights, and that is a real
   change rather than a setting.
 
+## Launch stages, do not call them
+
+`gap()` and `history()` are yours to call directly — they are plain API reads
+and work from anywhere.
+
+**Everything else must be launched as a task**, with `launch.py`:
+
+```bash
+python launch.py generate --gap bridge:52,excess_solder:44 --run-id myrun-r1
+python launch.py evaluate --run-dir /cache/results/pcb-uc1/runs/myrun-r1
+python launch.py improve  --run-dir /cache/results/pcb-uc1/runs/myrun-r1 --search-rounds 1
+python launch.py publish  --run-dir /cache/results/pcb-uc1/runs/myrun-r1/searched --run-id myrun-r1
+python launch.py train    --name inspector-round1
+```
+
+The reason is not style. **`/cache` is the task pod's volume.** Wherever you are
+running — a Claude Code session, a workbench, a laptop — you almost certainly do
+not have it. Call a stage in-process from there and it fails with
+
+```
+no SDG_result.csv under /cache/results/... -- run generation first
+```
+
+which reads like generation never happened. It did; you just cannot see its
+output from where you are standing. The in-process functions in `deft.py` exist
+for code already running *inside* a task, which is how `run_rounds.py` uses
+them.
+
+One consequence worth knowing: **publish runs on the GPU queue even though it
+needs no GPU.** The CPU queue's pods deliberately drop this recipe's overrides,
+so they have no cache mount. A stage that touches `/cache` has to go where the
+volume is.
+
+---
+
 ## The operations
 
 | Call | What it does | What you decide |
