@@ -241,4 +241,18 @@ if __name__ == "__main__":
     thr = None
     if "--nn-threshold" in sys.argv:
         thr = float(sys.argv[sys.argv.index("--nn-threshold") + 1])
-    publish_synthetic(nn_threshold=thr)
+    elif os.environ.get("DEFT_NN_THRESHOLD"):
+        thr = float(os.environ["DEFT_NN_THRESHOLD"])
+    # PUBLISH HAS TO BE RUNNABLE AS A TASK. It reads the generated images off
+    # the shared cache, and that cache is mounted on TASK pods -- not on
+    # whatever an agent happens to be sitting in. An agent driving from a
+    # session app has no /cache at all, so an in-process publish fails with
+    # "no SDG_result.csv" for a reason that has nothing to do with generation.
+    #
+    # DEFT_RUN_DIR should be the SEARCHED bucket when phases 5-7 have run
+    # (runs/<id>/searched), and DEFT_RUN_ID the real run id -- `searched` is the
+    # basename of every round's output, so the duplicate guard needs telling.
+    publish_synthetic(nn_threshold=thr,
+                      run_dir=os.environ.get("DEFT_RUN_DIR") or None,
+                      run_id=os.environ.get("DEFT_RUN_ID") or None,
+                      target_per_class=int(os.environ.get("DEFT_TARGET") or 60))

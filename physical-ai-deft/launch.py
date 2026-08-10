@@ -98,6 +98,11 @@ STAGES = {
     "improve": ("anomalygen_improve.py",
                 "AnomalyGen -- search, keep best, filter and regenerate",
                 "data_processing", "gpu"),
+    # Publish reads the generated images off the shared cache, which only TASK
+    # pods have -- an agent in a session app cannot do this in-process.
+    "publish": ("publish_synthetic.py",
+                "Publish the survivors as the next HyperDataset version",
+                "data_processing", "cpu"),
     "train": ("train_inspector.py", "Train the inspector", "training", "gpu"),
 }
 
@@ -160,8 +165,11 @@ def main():
                         "without the search. EXPENSIVE: each one regenerates "
                         "every sample.")
     p.add_argument("--run-dir", default=None,
-                   help="improve stage only: the generation run to improve "
-                        "(defaults to the most recent)")
+                   help="improve/publish/evaluate: the run directory to act on. "
+                        "For publish AFTER phases 5-7 this is the searched "
+                        "bucket, runs/<id>/searched.")
+    p.add_argument("--target", type=int, default=None,
+                   help="publish stage only: per-class target (default 60)")
     p.add_argument("--run-id", default=None,
                    help="generate stage only: unique id for this generation "
                         "run. MUST differ per invocation -- reusing one makes "
@@ -195,6 +203,8 @@ def main():
         env["DEFT_RUN_ID"] = a.run_id
     if a.seed is not None:
         env["DEFT_SEED"] = a.seed
+    if a.target is not None:
+        env["DEFT_TARGET"] = a.target
     if a.baseline:
         env["DEFT_BASELINE"] = 1
     if a.name:
