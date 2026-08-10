@@ -30,13 +30,51 @@ private edit call; an env var is public API and shows up on the task record
 where a reader can see it.
 """
 import argparse
+import os
+import pathlib
 import sys
 
-IMAGE = "nvcr.io/nvidia/paidf-anomalygen:1.0.1"
-REPO = "https://github.com/damianerangey-cml/hands-on-labs.git"
-BRANCH = "main"
-PROJECT = "Physical AI Inspection"
-WORKDIR = "physical-ai-deft"
+# EVERY ONE OF THESE IS OVERRIDABLE, AND THE REPO ONE MATTERS MOST.
+#
+# `Task.create(repo=...)` makes the AGENT clone that repository -- so if you
+# fork this, edit a stage, and run launch.py without changing REPO, your task
+# clones the ORIGINAL from GitHub and your edits are silently ignored. You are
+# then debugging code that is not running. The default is therefore derived
+# from this checkout's own `origin` remote, so a fork does the obvious thing;
+# DEFT_REPO / DEFT_BRANCH override it, and the literal is only the last resort
+# for a copy with no git remote at all.
+def _git(*args, default=""):
+    import subprocess
+    try:
+        return subprocess.run(("git",) + args, cwd=str(pathlib.Path(__file__).parent),
+                              capture_output=True, text=True, timeout=5
+                              ).stdout.strip() or default
+    except Exception:
+        return default
+
+
+IMAGE = os.environ.get("DEFT_IMAGE", "nvcr.io/nvidia/paidf-anomalygen:1.0.1")
+def _https(url):
+    """git@host:owner/repo.git -> https://host/owner/repo.git
+
+    The agent clones this URL inside a task pod that has no SSH key, so an SSH
+    remote -- which is what a developer's own checkout usually has -- would fail
+    the clone with a permission error that looks like a credentials problem with
+    ClearML rather than with git.
+    """
+    if url.startswith("git@") and ":" in url:
+        host, _, path = url[4:].partition(":")
+        return "https://%s/%s" % (host, path)
+    return url
+
+
+REPO = (os.environ.get("DEFT_REPO")
+        or _https(_git("remote", "get-url", "origin"))
+        or "https://github.com/damianerangey-cml/hands-on-labs.git")
+BRANCH = (os.environ.get("DEFT_BRANCH")
+          or _git("rev-parse", "--abbrev-ref", "HEAD", default="main"))
+PROJECT = os.environ.get("DEFT_PROJECT", "Physical AI Inspection")
+WORKDIR = os.environ.get("DEFT_WORKDIR", "physical-ai-deft")
 
 SETUP = "python3 -m pip install -q --no-input clearml scikit-learn"
 

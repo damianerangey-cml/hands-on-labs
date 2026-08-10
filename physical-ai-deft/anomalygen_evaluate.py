@@ -45,9 +45,7 @@ def _latest_run(dataset_name):
 
 
 def anomalygen_evaluate(dataset_name="pcb-uc1",
-                        anomaly_types=("IC+bridge",
-                                       "passive_component+excess_solder",
-                                       "passive_component+missing"),
+                        anomaly_types=None,
                         nn_threshold=None,
                         run_dir=None):
     """Run NVIDIA's eval and turn per-sample nn_score into accept/reject."""
@@ -59,6 +57,15 @@ def anomalygen_evaluate(dataset_name="pcb-uc1",
     # linked in even though this stage downloads nothing.
     link_checkpoints()
     dataset_dir = ensure_dataset(dataset_name)
+    # READ THE DEFECT TYPES, DO NOT HARDCODE THEM. This used to default to the
+    # three PCB types. On any other dataset that silently scores the wrong
+    # classes -- the eval reports NaN for types that are not there and never
+    # looks at the ones that are, so a batch comes back "unscored" for a reason
+    # nothing in the output explains. defect_spec.jsonl is authoritative.
+    if not anomaly_types:
+        import anomalygen_generate as _gen
+        anomaly_types = _gen.defect_types_from_spec(
+            os.path.join(dataset_dir, "defect_spec.jsonl"))
     generated = run_dir or _latest_run(dataset_name)
     per_sample = os.path.join(generated, "per_sample.csv")
 

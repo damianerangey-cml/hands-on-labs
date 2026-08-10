@@ -19,7 +19,12 @@ import os
 import subprocess
 import sys
 
-REPO_ROOT = "/workspace/paidf-anomalygen"
+# WHERE NVIDIA'S CODE LIVES INSIDE THEIR IMAGE. Overridable because it is a
+# property of the image tag, not of this lab -- a different paidf-anomalygen
+# build (or a site that rebuilt it from the Apache-2.0 source) can put it
+# somewhere else, and then every stage fails on a relative script path with a
+# bare "No such file or directory" that says nothing about why.
+REPO_ROOT = os.environ.get("DEFT_AG_REPO_ROOT", "/workspace/paidf-anomalygen")
 CACHE = os.environ.get("DEFT_CACHE", "/cache")
 
 

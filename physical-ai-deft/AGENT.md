@@ -66,11 +66,33 @@ Set the env var once you have the answer so you stop asking. If there is no
 48 GB queue at all, say so and skip the fine-tune — the rest of the pipeline
 runs on 24 GB and this lab has been demonstrating exactly that.
 
-Other things worth confirming rather than assuming, in the same spirit: the
-HyperDataset name (`DEFT_HYPERDATASET`, default "PCB Inspection"), whether the
-server has HyperDatasets at all, and whether task pods get a shared cache path
-(`DEFT_CACHE`, default `/cache`) — without one, every stage re-downloads 22 GB
-of checkpoints, which is slow rather than wrong.
+### Everything else that is a local convention
+
+Each of these has a default that is right *here* and may be wrong where you are.
+All are environment variables, so you can fix one without editing code.
+
+| Variable | Default | Breaks how, if wrong |
+|---|---|---|
+| `DEFT_REPO` | this checkout's `origin`, SSH rewritten to HTTPS | **Read this one.** The agent clones this URL — if it points at the upstream while you are editing a fork, your task runs *the original code* and your edits are silently ignored. You then debug something that is not running. |
+| `DEFT_BRANCH` | this checkout's current branch | Same class of problem: a task running a branch you are not on. |
+| `DEFT_IMAGE` | `nvcr.io/nvidia/paidf-anomalygen:1.0.1` | A different NVIDIA release, or your own rebuild from their Apache-2.0 source. |
+| `DEFT_AG_REPO_ROOT` | `/workspace/paidf-anomalygen` | Where NVIDIA's code sits *inside* the image. A rebuild can move it, and every stage then dies on a relative script path with a bare "No such file or directory". |
+| `DEFT_CACHE` | `/cache` | The shared path between stages. Without one, each stage re-downloads ~22 GB — slow, not wrong. |
+| `DEFT_PROJECT` | `Physical AI Inspection` | Where tasks and models land. |
+| `DEFT_HYPERDATASET` | `PCB Inspection` | Which dataset the gap is read from. |
+| `DEFT_DATASET` | `pcb-uc1` | NVIDIA's use-case id. **`ensure_dataset` calls `prepare_dataset_uc1.py`** — they ship `uc2` and `uc3` too, and this lab has only ever been run against `uc1`. Another use case needs that call generalised, not just this variable changed. |
+
+Two things are **not** parameterised and you should know why:
+
+- **The defect types are read from `defect_spec.jsonl`**, not configured. They
+  used to be a hardcoded PCB list, which silently scored the wrong classes on
+  any other dataset — the eval returns NaN for types that are absent and never
+  looks at the ones present, so the batch comes back "unscored" for a reason
+  nothing in the output explains.
+- **The adapter and its step (`Cosmos-AnomalyGen-PCB-2B`, iteration 14000) are
+  pinned** in `anomalygen_generate.py`. They are NVIDIA's published PCB
+  weights. A different use case needs different weights, and that is a real
+  change rather than a setting.
 
 ## The operations
 
