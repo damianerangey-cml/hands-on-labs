@@ -94,43 +94,48 @@ Two things are **not** parameterised and you should know why:
   weights. A different use case needs different weights, and that is a real
   change rather than a setting.
 
-## Never repair the system Python — build a venv
+## Find the interpreter that owns the packages — do not repair anything
 
-If `import clearml` fails, or the interpreter dies on something like
-`assert _sre.MAGIC == MAGIC  # SRE module mismatch`, you are looking at a
-mismatched stdlib: a newer interpreter loading an older tree, usually because
-`PYTHONPATH` or `PYTHONHOME` points at it.
+A container can have more than one Python, and the one on `PATH` is not
+necessarily the one with your packages. Measured on the ClearML `claude_code`
+app image:
 
-**Do this:**
+| binary | what it is |
+|---|---|
+| `/usr/bin/python3` → 3.13 | bare. No pip, no `venv`, and it picks up 3.11's stdlib, so it dies with `assert _sre.MAGIC == MAGIC  # SRE module mismatch` |
+| `/usr/local/bin/python3` → 3.11 | **everything** — `clearml`, `numpy`, the app's own dependencies |
 
-```bash
-unset PYTHONPATH PYTHONHOME
-python3 -m venv /root/deft-venv
-/root/deft-venv/bin/pip install -q --upgrade pip clearml
-/root/deft-venv/bin/python -c "import clearml; print(clearml.__version__)"
-```
-
-**Never do this:**
+The app launcher itself runs on `/usr/local/bin/python3`. So the fix is one
+line: **use that binary.** No venv, no install, nothing to repair.
 
 ```bash
-rm -rf /usr/local/lib/python3.11    # NO
+/usr/local/bin/python3 -c "import clearml; print(clearml.__version__)"
 ```
 
-Observed live, 2026-08-10. An agent diagnosed "stale packages", removed that
-tree, and the follow-up `python3.13 -m pip install` failed with *no module
-named pip* — so it had deleted every installed package, including the only
-copy of `clearml`, and replaced them with nothing. The session lost its shell
-shortly after and had to be destroyed.
+**Before concluding anything is broken, find the working interpreter:**
 
-Two things made that worse than it looks. The deletion **did** fix the
-interpreter, so the error changed from a crash to a plausible-looking missing
-module and the damage was not obvious. And the tree it removed was
-site-packages, not a stale duplicate — the diagnosis was wrong in a way the
-error message did not contradict.
+```bash
+ls /usr/local/bin/python* /usr/bin/python*
+for p in /usr/local/bin/python3 /usr/bin/python3; do
+  echo "$p: $($p -c 'import clearml,sys; print(sys.version.split()[0], clearml.__version__)' 2>&1 | tail -1)"
+done
+```
 
-The rule generalises: **diagnose before you delete, and never remove a system
-path to fix an import.** A venv costs ten seconds and cannot damage anything.
-If the only fix you can see is destructive, stop and ask.
+### Two ways this has already gone wrong
+
+**Deleting things.** An agent read `SRE module mismatch` as "stale packages" and
+ran `rm -rf /usr/local/lib/python3.11` — which was site-packages, containing the
+only copy of `clearml`. It half-worked: the interpreter recovered, so the error
+became a plausible *no module named pip* and the damage was invisible. The
+session lost its shell and was destroyed. **Never remove a system path to fix an
+import.**
+
+**A "fix" that reports success.** The replacement was a setup script ending
+`echo "venv ready: $(...python -V)"`. The venv creation had already failed —
+3.13 has no `ensurepip` — but the version string still printed, because the
+binary existed inside a half-built venv. A check that cannot fail is not a
+check. **Verify the thing you actually need** (`import clearml`), not a proxy
+for it.
 
 ---
 
