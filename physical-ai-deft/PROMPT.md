@@ -20,7 +20,8 @@ paste 1 is there because of something that actually went wrong:
 | use `/usr/local/bin/python3` | The image ships two Pythons and `PATH` has the bare one. An agent spent three commands "repairing" a container that was already fine. |
 | never delete under `/usr/local` | One did `rm -rf /usr/local/lib/python3.11` — site-packages, containing the only `clearml`. It half-worked, so the damage was invisible until the shell died. |
 | label VERIFIED / INFERRED | One reported three green ticks, including "HyperDatasets: Enterprise-grade", while unable to run a line of code. Its evidence was that *our own source* calls those endpoints. |
-| don't guess queues | A queue nobody serves accepts the task and holds it forever. Ten seconds of asking beats a demo that hangs. |
+| don't guess queues | A queue nobody serves accepts the task and holds it forever. Ten seconds of asking beats a demo that hangs. Nothing is built in — an earlier version shipped one deployment's names as defaults, and on a server that spelled one differently the near-miss was harder to debug than an absence. |
+| record with `set_queues`, not `export` | An agent's shell dies between commands, so "export it and stop asking" means re-asking forever — and an agent tired of asking starts guessing. |
 | stop before launching | So you can check all of the above before it spends a GPU. |
 
 ### Paste 1 — ground rules and proof of life
@@ -57,9 +58,14 @@ source is not evidence about this server.
       missing. If it fails, show me the error rather than interpreting it.
    d. Which queue should serve each role: gpu (a whole card, 24 GB is enough),
       cpu (no GPU), gpu48 (48 GB or more, optional -- only the fine-tune needs
-      it)? If you cannot tell from the names, say so and ask. Do not guess:
+      it)? There are NO built-in queue names, deliberately. Show me the real
+      list and ask. Do not guess, and do not infer from a name looking GPU-ish:
       enqueueing to a queue nobody serves is accepted silently and then waits
-      forever.
+      forever, and `gpu-shared` may be eight fractional slices of one card.
+      When I answer, record it with deft.set_queues(gpu=..., cpu=..., gpu48=...)
+      -- it checks each name against the server and writes ~/.deft/config.json.
+      Do NOT just `export` it: your shell does not survive between commands, so
+      an exported answer is gone by your next call and you will re-ask forever.
 
 If you cannot execute code at all, say that FIRST and stop. A report of green
 ticks from an agent that ran nothing is worse than no report.
