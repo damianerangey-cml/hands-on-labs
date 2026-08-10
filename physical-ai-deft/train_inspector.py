@@ -60,7 +60,7 @@ version is the manifest that says which ones counted.
 import json
 import os
 
-from ag_common import CACHE
+from ag_common import CACHE, ensure_dataset
 
 
 def _run_dirs(dataset_name):
@@ -163,7 +163,7 @@ def train_inspector(hyperdataset_name="PCB Inspection",
     import hyperdataset as hd
 
     task = Task.current_task()
-    dataset_dir = os.path.join(CACHE, "datasets", dataset_name)
+    dataset_dir = ensure_dataset(dataset_name)
     results_dirs = _run_dirs(dataset_name)
 
     ds_id = hd.get_or_create_dataset(hyperdataset_name)

@@ -35,7 +35,8 @@ import json
 import os
 import sys
 
-from ag_common import CACHE, REPO_ROOT, link_checkpoints, run as _run
+from ag_common import (CACHE, REPO_ROOT, ensure_dataset, link_checkpoints,
+                       run as _run)
 
 
 # The step baked into NVIDIA's released PCB checkpoint (iter_000014000.pt).
@@ -211,9 +212,7 @@ def anomalygen_generate(dataset_name="pcb-uc1",
 
     # ---- dataset ---------------------------------------------------------
     print("=" * 66 + "\nDATASET\n" + "=" * 66, flush=True)
-    dataset_dir = os.path.join(CACHE, "datasets", dataset_name)
-    if not os.path.isdir(dataset_dir):
-        _run([sys.executable, "scripts/utilities/prepare_dataset_uc1.py", dataset_dir])
+    dataset_dir = ensure_dataset(dataset_name)
     defect_spec = os.path.join(dataset_dir, "defect_spec.jsonl")
 
     # ---- the allocation --------------------------------------------------

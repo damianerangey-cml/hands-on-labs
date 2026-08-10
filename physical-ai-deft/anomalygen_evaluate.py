@@ -29,7 +29,7 @@ import os
 import statistics
 import sys
 
-from ag_common import CACHE, link_checkpoints, run as _run
+from ag_common import CACHE, ensure_dataset, link_checkpoints, run as _run
 
 
 def _latest_run(dataset_name):
@@ -58,7 +58,7 @@ def anomalygen_evaluate(dataset_name="pcb-uc1",
     # (checkpoints/nvidia/C-RADIO-V3/model.safetensors), so the cache has to be
     # linked in even though this stage downloads nothing.
     link_checkpoints()
-    dataset_dir = os.path.join(CACHE, "datasets", dataset_name)
+    dataset_dir = ensure_dataset(dataset_name)
     generated = run_dir or _latest_run(dataset_name)
     per_sample = os.path.join(generated, "per_sample.csv")
 

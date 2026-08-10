@@ -17,6 +17,7 @@ have every task call it.
 """
 import os
 import subprocess
+import sys
 
 REPO_ROOT = "/workspace/paidf-anomalygen"
 CACHE = os.environ.get("DEFT_CACHE", "/cache")
@@ -60,6 +61,30 @@ def run(cmd, cwd=REPO_ROOT, env=None):
     p = subprocess.run(cmd, cwd=cwd, env={**os.environ, **(env or {})})
     if p.returncode != 0:
         raise SystemExit("step failed (%d): %s" % (p.returncode, " ".join(cmd)))
+
+
+def ensure_dataset(dataset_name, cache=None):
+    """NVIDIA's prepared dataset tree at <cache>/datasets/<name>. Idempotent.
+
+    THE SAME MISTAKE, A FOURTH TIME. This directory used to be a side effect of
+    `anomalygen_generate`, which prepared it lazily on its way to placing masks.
+    Every stage that came later found it already there and nobody noticed the
+    dependency -- until the loop ran on a cold cache and ROUND 0, the real-only
+    baseline, crashed before any generation had happened:
+
+        FileNotFoundError: '/cache/datasets/pcb-uc1'
+
+    It is not generation's private working directory. It is the REAL DATA --
+    `train_inspector` reads its held-out images from here, and the evaluator and
+    phases 5-7 pass it as `--real-path`. So it is shared setup, which is what
+    this module is for. Anything that needs it calls this and stops caring who
+    got there first.
+    """
+    d = os.path.join(cache or CACHE, "datasets", dataset_name)
+    if not os.path.isdir(d):
+        print("preparing NVIDIA's dataset at %s" % d, flush=True)
+        run([sys.executable, "scripts/utilities/prepare_dataset_uc1.py", d])
+    return d
 
 
 def require_hf_token():

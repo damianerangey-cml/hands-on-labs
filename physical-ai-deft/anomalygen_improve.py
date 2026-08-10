@@ -46,7 +46,7 @@ import os
 import statistics
 import sys
 
-from ag_common import CACHE, link_checkpoints, run as _run
+from ag_common import CACHE, ensure_dataset, link_checkpoints, run as _run
 
 # NVIDIA's defaults, and the original pass this lab already runs.
 BASE_GUIDANCE = 7.0
@@ -126,7 +126,7 @@ def anomalygen_improve(dataset_name="pcb-uc1",
     task = Task.current_task()
     link_checkpoints()
 
-    dataset_dir = os.path.join(CACHE, "datasets", dataset_name)
+    dataset_dir = ensure_dataset(dataset_name)
     defect_spec = os.path.join(dataset_dir, "defect_spec.jsonl")
     if not run_dir:
         raise SystemExit("run_dir is required -- phases 5-7 improve a run that "
