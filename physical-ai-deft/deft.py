@@ -123,15 +123,27 @@ def set_queues(gpu=None, cpu=None, gpu48=None):
     optional, and a server with no 48 GB card should skip the fine-tune rather
     than send it somewhere that cannot run it.
     """
+    import difflib
     import json
     have = {q["name"] for q in queues()}
     want = {"gpu": gpu, "cpu": cpu, "gpu48": gpu48}
     bad = {k: v for k, v in want.items() if v and v not in have}
     if bad:
+        # A near-miss beats an inventory. Measured on a server with 255 queues:
+        # dumping all of them is technically the answer to "what exists" and
+        # useless as an answer to "what did I get wrong", which is the question
+        # actually being asked. The close matches are usually the typo.
+        lines = []
+        for role, name in sorted(bad.items()):
+            near = difflib.get_close_matches(name, have, n=4, cutoff=0.5)
+            lines.append("  %s=%r -- %s" % (
+                role, name,
+                ("did you mean: " + ", ".join(near)) if near
+                else "no close match"))
         raise LookupError(
-            "No such queue on this server: %s\nQueues here: %s"
-            % (", ".join("%s=%r" % kv for kv in sorted(bad.items())),
-               ", ".join(sorted(have)) or "(none)"))
+            "No such queue on this server:\n%s\n\n"
+            "%d queues here; deft.queues() lists them all."
+            % ("\n".join(lines), len(have)))
     conf = config()
     conf.setdefault("queues", {}).update(
         {k: v for k, v in want.items() if v})
@@ -191,16 +203,21 @@ def pick_queue(kind="gpu"):
     if recorded:
         return recorded
     have = sorted(q["name"] for q in queues())
+    # Show a readable sample, not an inventory. A server with 255 queues turns
+    # a helpful error into a wall nobody reads, and the full list is one call
+    # away for anyone who wants it.
+    shown = "\n  ".join(have[:30]) or "(none)"
+    more = ("\n  ... and %d more -- deft.queues() lists them all"
+            % (len(have) - 30)) if len(have) > 30 else ""
     raise LookupError(
         "I do not know which queue to use for %s (%s).\n"
         "\n"
-        "Queues on this server:\n  %s\n"
+        "Queues on this server:\n  %s%s\n"
         "\n"
         "Ask which one, then record it so nobody has to answer twice:\n"
         "  deft.set_queues(%s=\"<name>\")\n"
         "(or export %s=<name> for a one-off)"
-        % (kind, _QUEUE_WANT[kind], "\n  ".join(have) or "(none)",
-           kind, _QUEUE_ENV[kind])
+        % (kind, _QUEUE_WANT[kind], shown, more, kind, _QUEUE_ENV[kind])
     )
 
 
