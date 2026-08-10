@@ -1,0 +1,128 @@
+# You own this inspection dataset
+
+You are running inside a Klique lab, in a workspace with this repository cloned
+and ClearML credentials already in the environment. There is a GPU behind a
+queue. You do not hold it; you submit work to it.
+
+Your job is to close the gap between the defect examples this dataset has and
+the ones it needs — and to be honest about how far you got.
+
+Nothing here is a script to run in order. These are operations. You decide what
+to call, with what, and when to stop.
+
+---
+
+## Your state is the dataset, not a file
+
+```python
+import deft
+deft.gap()        # {'version', 'counts', 'gap', 'at_target'}
+deft.history()    # every published version and registered model so far
+```
+
+`gap()` is server-side label counts: about a second, downloads nothing. Ask it
+as often as you like — before deciding, after publishing, and first thing if
+you have lost your place.
+
+**Keep no local state file.** If you crash mid-round, restart and ask what is
+true now. A previous you may have published a version you have no memory of;
+`history()` is how you find out. This is the one thing that makes the loop
+survive its own driver, so do not undermine it by keeping notes on disk and
+trusting them over the server.
+
+---
+
+## The operations
+
+| Call | What it does | What you decide |
+|---|---|---|
+| `deft.gap(target=60)` | Reads the shortfall | The target |
+| `deft.generate(gap=…, n=24, run_id=…)` | Masks from the board's CAD, then generation | How many, and of what — pass `per_defect_counts` to split it yourself |
+| `deft.score(run_dir)` | NVIDIA's `nn_score` against the real examples | The threshold, or let it default to the batch median |
+| `deft.improve(run_dir, search_rounds=1)` | Re-rolls generation parameters, keeps the best attempt per sample, regenerates what is still short | Whether it is worth the GPU |
+| `deft.publish(run_dir, run_id)` | Commits survivors as the next immutable version | Nothing — the gate decides what earns a label |
+| `deft.train(name, use_synthetic=…)` | Trains an inspector, registers it against the version | When, and whether this is the control |
+
+Each returns a dict. Read it — `generate` tells you what was actually delivered
+per class, `score` gives you the distribution, `improve` reports what the search
+bought and what it did not.
+
+You can also import the stage modules directly and call them with arguments
+this file does not mention. `deft.py` is a convenience, not a fence.
+
+---
+
+## Rules you do not get to break
+
+These are not style preferences. Each one is a way the loop can start lying to
+itself, and every one has happened.
+
+1. **`run_id` must be unique per invocation.** Reuse one and `publish()` treats
+   the round as already published and adds nothing — no error, no frames, and a
+   round that looks like it worked. Scope it to your session.
+
+2. **A frame earns its label from the gate.** Never publish a generated frame
+   under its defect class because you expect it to be good. What the gate
+   rejects lands as `pending-review` and counts toward nothing. You are reading
+   these counts next round; if you inflate them you are deceiving yourself.
+
+3. **The real data is registered once.** If `v1-real` exists, reuse it. A second
+   copy doubles every count you reason over.
+
+4. **Bound your own spending.** Each search round regenerates every sample.
+   `--rounds 3 --search-rounds 2` is nine batches of generation, not three.
+   Decide a ceiling before you start and hold to it.
+
+5. **Report what you measured.** If the holdout cannot resolve the difference
+   between two rounds, say that. On NVIDIA's 86 sample images it cannot — 28
+   held-out images means accuracy moves in steps of 3.6%, and `bridge` has about
+   two examples in there. A flat line is not evidence of anything.
+
+---
+
+## Judgement worth exercising
+
+The interesting decisions are not "how many" — that is arithmetic once you have
+the gap. They are:
+
+- **A class scoring badly.** `excess_solder` has come in around 0.52–0.66 while
+  `bridge` sits near 0.66. Is that the generator, the defect spec describing the
+  wrong thing, or a class that will not synthesise on this board? `improve()`
+  with a search is the cheap way to find out; giving up on the class and
+  spending the GPU on `bridge` is a legitimate answer too.
+- **Whether a search is worth it.** It costs a full regeneration per round. On
+  one batch a lower guidance helped; on another it made no difference. You will
+  not know in advance — but you can look at what the last one bought.
+- **When to stop.** At target, out of budget, or when a round adds nothing. If
+  the gap did not move, running the same generation again will not move it.
+
+`draws_for_round()` in `anomalygen_improve.py` is where per-sample generation
+parameters are chosen — NVIDIA documents that argument as "Claude-selected
+hyperparameters per sample", so they built it expecting you. It currently holds
+a two-point grid. Replacing it is fair game.
+
+---
+
+## When something fails
+
+- `no per_sample.csv` → you called `improve()` before `score()`.
+- `A dataset version with the provided name already exists` → the real data is
+  already registered. That means "done", not "pick another name".
+- `0 free` missing from the mask-placement line → the CAD did not reach the
+  container and the defects landed in arbitrary places. **Stop.** The images are
+  worthless and nothing else will tell you.
+- `asked N got fewer` → usually legitimate. Automatic Mask Placement can only
+  put a defect where the CAD says that fault can occur. Check the AMP log for
+  `ok < requested` before treating it as a bug.
+
+`SKILL.md` has the full list, including the ones that cost a GPU hour.
+
+---
+
+## What you should have at the end
+
+A published dataset version per round, a registered model per round plus a
+real-only baseline, and a short account of what you decided and why — including
+the decisions that did not pay off. The platform already recorded what ran; what
+it cannot record is your reasoning, and that is the part a person reading this
+tomorrow will want.

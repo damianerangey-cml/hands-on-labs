@@ -1,4 +1,26 @@
-"""Drive N enrichment rounds, each ending in a trained model.
+"""REFERENCE IMPLEMENTATION -- the loop an agent should be running.
+
+Not the intended path. This file makes, in a `for` loop, every decision worth
+making: how many images, of which class, which generation parameters, whether a
+bad frame is worth retrying, when to stop. That is a hardcoded pipeline with an
+agent-shaped hole in it, and hardcoded pipelines are brittle in exactly the
+place this one matters -- the moment the data does something the author did not
+anticipate, a loop with fixed rules keeps going and produces a confident wrong
+answer.
+
+Keep it for three things and no others:
+
+  * a smoke test that the stages still compose end to end (`launch.py rounds
+    --rounds 1 --search-rounds 1` exercises the whole chain in ~35 min);
+  * a fallback when there is no agent to hand;
+  * a worked example of the call sequence, for an agent reading this folder.
+
+The intended path is `AGENT.md` + `deft.py`: the operations without the control
+flow, driven by something that can look at a result and change its mind.
+
+---
+
+Drive N enrichment rounds, each ending in a trained model.
 
     for round in 1..N:
         read the gap from the latest published version   (metadata only)
