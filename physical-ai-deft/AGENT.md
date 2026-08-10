@@ -94,6 +94,46 @@ Two things are **not** parameterised and you should know why:
   weights. A different use case needs different weights, and that is a real
   change rather than a setting.
 
+## Never repair the system Python — build a venv
+
+If `import clearml` fails, or the interpreter dies on something like
+`assert _sre.MAGIC == MAGIC  # SRE module mismatch`, you are looking at a
+mismatched stdlib: a newer interpreter loading an older tree, usually because
+`PYTHONPATH` or `PYTHONHOME` points at it.
+
+**Do this:**
+
+```bash
+unset PYTHONPATH PYTHONHOME
+python3 -m venv /root/deft-venv
+/root/deft-venv/bin/pip install -q --upgrade pip clearml
+/root/deft-venv/bin/python -c "import clearml; print(clearml.__version__)"
+```
+
+**Never do this:**
+
+```bash
+rm -rf /usr/local/lib/python3.11    # NO
+```
+
+Observed live, 2026-08-10. An agent diagnosed "stale packages", removed that
+tree, and the follow-up `python3.13 -m pip install` failed with *no module
+named pip* — so it had deleted every installed package, including the only
+copy of `clearml`, and replaced them with nothing. The session lost its shell
+shortly after and had to be destroyed.
+
+Two things made that worse than it looks. The deletion **did** fix the
+interpreter, so the error changed from a crash to a plausible-looking missing
+module and the damage was not obvious. And the tree it removed was
+site-packages, not a stale duplicate — the diagnosis was wrong in a way the
+error message did not contradict.
+
+The rule generalises: **diagnose before you delete, and never remove a system
+path to fix an import.** A venv costs ten seconds and cannot damage anything.
+If the only fix you can see is destructive, stop and ask.
+
+---
+
 ## Verified or inferred — say which
 
 When you report what a server can do, **label every claim**. Observed live on the
