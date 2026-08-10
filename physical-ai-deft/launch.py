@@ -98,11 +98,16 @@ STAGES = {
     "improve": ("anomalygen_improve.py",
                 "AnomalyGen -- search, keep best, filter and regenerate",
                 "data_processing", "gpu"),
-    # Publish reads the generated images off the shared cache, which only TASK
-    # pods have -- an agent in a session app cannot do this in-process.
+    # Publish needs no GPU but runs on the GPU queue anyway, and the reason is
+    # worth knowing: the CPU queue's pod template DELIBERATELY drops the
+    # recipe's overrides (it keeps only privileged/tolerations and routes to the
+    # shared `general` NodePool), so it has no model-cache mount. Publish reads
+    # the generated images off that cache. On the CPU queue it fails with
+    # "no SDG_result.csv" -- which reads like generation never ran, rather than
+    # like the volume is missing.
     "publish": ("publish_synthetic.py",
                 "Publish the survivors as the next HyperDataset version",
-                "data_processing", "cpu"),
+                "data_processing", "gpu"),
     "train": ("train_inspector.py", "Train the inspector", "training", "gpu"),
 }
 
