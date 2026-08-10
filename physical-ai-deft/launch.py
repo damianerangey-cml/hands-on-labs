@@ -50,6 +50,13 @@ STAGES = {
                  "data_processing", "1XGPU"),
     "evaluate": ("anomalygen_evaluate.py", "AnomalyGen -- score against the real data",
                  "data_processing", "1XGPU"),
+    # The 48 GB lane. NVIDIA's phase 1 wants 4.54 GiB more than a 24 GB card
+    # has, so it targets a queue wired to its own NodePool of g6e.* machines.
+    # Expect a ~10 min cold start: that pool has no prewarm and no keepalive, so
+    # the card is created when this task asks for it and released after.
+    "finetune": ("anomalygen_finetune.py",
+                 "AnomalyGen phase 1 -- few-shot fine-tune (48GB)",
+                 "training", "1xGPU-48GB"),
     "improve": ("anomalygen_improve.py",
                 "AnomalyGen -- search, keep best, filter and regenerate",
                 "data_processing", "1XGPU"),
