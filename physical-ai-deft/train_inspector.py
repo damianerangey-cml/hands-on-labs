@@ -291,4 +291,17 @@ def train_inspector(hyperdataset_name="PCB Inspection",
 
 
 if __name__ == "__main__":
-    train_inspector()
+    # THE CONTROL HAS TO BE REACHABLE FROM OUTSIDE. This used to be a bare
+    # train_inspector(), so `launch.py train` always trained WITH synthetic data
+    # and the real-only baseline existed only inside run_rounds.py. An agent
+    # driving the stages could therefore not run the one model that makes every
+    # later comparison mean anything -- it would have had to import the module
+    # and run training in its own process, off the GPU queue.
+    import os as _os
+    _baseline = (_os.environ.get("DEFT_BASELINE", "").lower()
+                 in ("1", "true", "yes"))
+    train_inspector(
+        round_name=_os.environ.get("DEFT_ROUND_NAME")
+                   or ("inspector-baseline" if _baseline else "inspector"),
+        use_synthetic=not _baseline,
+    )

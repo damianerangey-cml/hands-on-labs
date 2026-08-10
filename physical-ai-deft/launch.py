@@ -162,6 +162,13 @@ def main():
     p.add_argument("--run-dir", default=None,
                    help="improve stage only: the generation run to improve "
                         "(defaults to the most recent)")
+    p.add_argument("--baseline", action="store_true",
+                   help="train stage only: the CONTROL -- real images only, no "
+                        "synthetic. Run this once before generating anything; "
+                        "without it there is nothing to compare later rounds to.")
+    p.add_argument("--name", default=None,
+                   help="train stage only: model name (default inspector, or "
+                        "inspector-baseline with --baseline)")
     p.add_argument("--queue", default=None, help="override the stage's queue")
     a = p.parse_args()
 
@@ -176,6 +183,12 @@ def main():
         if " " in a.run_dir:
             p.error("--run-dir cannot contain spaces; it rides in docker_args")
         env["DEFT_RUN_DIR"] = a.run_dir
+    if a.baseline:
+        env["DEFT_BASELINE"] = 1
+    if a.name:
+        if " " in a.name:
+            p.error("--name cannot contain spaces; it rides in docker_args")
+        env["DEFT_ROUND_NAME"] = a.name
     if a.gap is not None:
         # Reject it here rather than ten minutes later on the agent. No spaces
         # or quotes may reach docker_args -- the agent splits it on whitespace.
