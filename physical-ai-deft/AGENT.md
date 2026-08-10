@@ -94,6 +94,42 @@ Two things are **not** parameterised and you should know why:
   weights. A different use case needs different weights, and that is a real
   change rather than a setting.
 
+## Verified or inferred — say which
+
+When you report what a server can do, **label every claim**. Observed live on the
+first real bring-up: an agent whose Python was broken, so it could execute
+nothing at all, reported three confident green ticks — including
+"HyperDatasets: YES, server is Enterprise-grade". Its evidence was that
+`hyperdataset.py` *calls* the `datasets.*` endpoints.
+
+That is not evidence. **Our code calling an API says nothing about whether this
+server implements it.** The same run asserted "stages do have `/cache` mounted
+(pod volumes)" about a server it had never run a task on — reading this
+repository's local arrangement as a universal fact.
+
+So:
+
+- **Verified** = you called it and saw the response. `datasets.get_all_ex`
+  returning 200 verifies HyperDatasets; reading a file that mentions them does
+  not.
+- **Inferred** = you reasoned from config, docs or code. Legitimate, and it must
+  be labelled as such.
+- **Unknown** = you could not check. Say so, and say why.
+
+If you cannot run code at all, that is the **headline**, not a footnote. A
+report full of ticks from an agent that executed nothing is worse than no
+report, because someone will act on it.
+
+Minimum to actually verify, once Python works:
+
+```python
+deft.queues()                    # real queue names, from the server
+deft.gap()                       # proves datasets.* exists AND you can read it
+python launch.py --help          # proves the harness imports
+```
+
+---
+
 ## Launch stages, do not call them
 
 `gap()` and `history()` are yours to call directly — they are plain API reads
