@@ -133,6 +133,28 @@ def launch(stage, queue=None, env=None, dry_run=False):
     from clearml import Task
 
     script, name, ttype, default_queue = STAGES[stage]
+
+    # RESOLVE THE QUEUE FIRST -- BEFORE creating anything.
+    #
+    # This used to sit after Task.create, and the ordering was a real bug: a
+    # stage with no queue raised AFTER the task existed, leaving an orphaned
+    # draft on the server for a stage that could never run. Every failed launch
+    # littered one. Worse, the traceback made it look like nothing had been
+    # created -- an agent reported "the stage never gets drafted" from the
+    # exception alone, and was wrong, because the exception says nothing about
+    # what happened on the line before it.
+    #
+    # `default_queue` is a KIND ("gpu"/"cpu"/"gpu48"), not a name. THERE ARE NO
+    # QUEUE NAMES IN THIS REPOSITORY -- see deft.py. pick_queue() reads what has
+    # been recorded for this server and raises a question rather than
+    # enqueueing into a queue nobody serves, which would otherwise sit in
+    # `queued` forever looking like a slow start.
+    if queue:
+        q = queue
+    else:
+        import deft
+        q = deft.pick_queue(default_queue)
+
     docker_args = ["-e CLEARML_AGENT_SKIP_PYTHON_ENV_INSTALL=1",
                    "-e HF_HUB_DISABLE_XET=1"]
     for k, v in sorted((env or {}).items()):
@@ -147,17 +169,6 @@ def launch(stage, queue=None, env=None, dry_run=False):
         docker=IMAGE,
         docker_args=" ".join(docker_args),
         docker_bash_setup_script=SETUP)
-
-    # RESOLVE, do not assume. `default_queue` is a KIND ("gpu"/"cpu"/"gpu48"),
-    # not a name. THERE ARE NO QUEUE NAMES IN THIS REPOSITORY -- see deft.py
-    # for why. pick_queue() reads what has been recorded for this server, and
-    # raises a question rather than enqueueing into a queue nobody serves,
-    # which would otherwise sit in `queued` forever looking like a slow start.
-    if queue:
-        q = queue
-    else:
-        import deft
-        q = deft.pick_queue(default_queue)
 
     print("task   %s" % task.id)
     print("repo   %s @ %s" % (REPO, BRANCH))

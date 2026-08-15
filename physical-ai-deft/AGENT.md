@@ -95,8 +95,20 @@ are under no obligation to describe what is behind them.
 
 `queues()` gives you one piece of real evidence: `recent_tasks`, how many of the
 last thousand tasks ran there. A queue that has run work has demonstrably run
-work. It is not proof — a new queue has no history and may be perfectly alive —
-but on the 255-queue server it named both live queues and nothing else.
+work.
+
+**Measured, so you know what it is worth.** On the 255-queue server, 16 queues
+had any history at all — a 94% cut, and genuinely useful. But the two the
+operator actually wanted were **not** the busiest. The correct CPU queue came
+second; the correct GPU queue came **tenth**, with two tasks against the leader's
+forty-nine. The busiest queues belonged to other people.
+
+So **do not sort by `recent_tasks` and take the top** — that would have picked
+wrong here, for both roles. The number tells you which queues are worth putting
+in front of a person. It does not tell you which one is yours. If you catch
+yourself reasoning about which of the sixteen is most likely, stop: that is the
+same guessing this mechanism exists to prevent, wearing a number instead of a
+name.
 
 ### Ask the question, do not also answer it
 
