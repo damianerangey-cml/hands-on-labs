@@ -20,6 +20,7 @@ paste 1 is there because of something that actually went wrong:
 | use `/usr/local/bin/python3` | The image ships two Pythons and `PATH` has the bare one. An agent spent three commands "repairing" a container that was already fine. |
 | never delete under `/usr/local` | One did `rm -rf /usr/local/lib/python3.11` — site-packages, containing the only `clearml`. It half-worked, so the damage was invisible until the shell died. |
 | label VERIFIED / INFERRED | One reported three green ticks, including "HyperDatasets: Enterprise-grade", while unable to run a line of code. Its evidence was that *our own source* calls those endpoints. |
+| check `task_repository/` before cloning | The wizard's Git field clones the repo before the session starts, and the container ships no `git` binary. Two agents, unaware of both facts, independently spent their first minutes downloading tarballs of a repo they already had. |
 | don't guess queues | A queue nobody serves accepts the task and holds it forever. Ten seconds of asking beats a demo that hangs. Nothing is built in — an earlier version shipped one deployment's names as defaults, and on a server that spelled one differently the near-miss was harder to debug than an absence. |
 | ask, don't recommend | An agent refused all three roles for want of evidence and then ranked them by name in the same reply. The human approved the ranking instead of supplying the answer they had; two of the three were dead queues. |
 | record with `set_queues`, not `export` | An agent's shell dies between commands, so "export it and stop asking" means re-asking forever — and an agent tired of asking starts guessing. |
@@ -44,8 +45,13 @@ SETUP
    delete anything under /usr/local or /usr/lib. If an import fails, find the
    interpreter that already owns the packages -- do not repair one.
 
-3. If the repository is not already here, clone
+3. The repository is usually ALREADY CLONED before your session starts --
+   the app's Git field does it. Look in ~/environment/task_repository/ first
+   and work from that clone in place. Only if it is not there: fetch
    https://github.com/damianerangey-cml/hands-on-labs
+   -- and note this container may have NO git binary. That is not a problem
+   to fix: curl the GitHub tarball (archive/refs/heads/main.tar.gz) instead.
+   Do not install git and do not pip anything.
    Then read physical-ai-deft/AGENT.md completely. It is the operations
    contract, including the rules you do not get to break.
 

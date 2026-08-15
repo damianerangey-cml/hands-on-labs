@@ -11,8 +11,12 @@ about how far you got.
 
 ## Read these before acting
 
-The repository is `physical-ai-deft/` (clone
-`https://github.com/damianerangey-cml/hands-on-labs` if it is not here).
+The repository is `physical-ai-deft/`. In a lab session it is usually already
+cloned at `~/environment/task_repository/hands-on-labs.git` — the app's Git
+field does that before you start; work from it in place. Only fetch it yourself
+if it is genuinely absent, and note the session container may ship **no git
+binary**: that is not a problem to fix — curl the GitHub tarball
+(`archive/refs/heads/main.tar.gz`) instead of installing anything.
 
 - **`physical-ai-deft/AGENT.md`** — the operations contract. Read it in full.
 - **`physical-ai-deft/SKILL.md`** — the traps, eleven of them, each one a real
