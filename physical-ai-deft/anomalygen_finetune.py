@@ -55,7 +55,8 @@ mounted cache).
 import os
 import sys
 
-from ag_common import bind_task, CACHE, REPO_ROOT, link_checkpoints, run as _run
+from ag_common import (CACHE, REPO_ROOT, bind_task, ensure_dataset,
+                       link_checkpoints, run as _run)
 
 IMAGE = "nvcr.io/nvidia/paidf-anomalygen:1.0.1"
 
@@ -130,11 +131,13 @@ def anomalygen_finetune(dataset_name="pcb-uc1",
           "--checkpoint-dir", ckpt_dir, "--model-sizes", size_up])
 
     # ---- dataset --------------------------------------------------------
-    # prepare_dataset_uc1.py fetches the HF bundle ITSELF (repo id is baked in)
-    # and flattens a stray wrapper dir; it takes one positional output dir.
+    # Through ensure_dataset, like every other stage -- NOT a direct call to
+    # NVIDIA's prepare script. This stage predated ensure_dataset and kept its
+    # own copy of the call; being the one stage nobody had ever run, it kept it
+    # longest, and its first run on the 48 GB lane failed in NVIDIA's
+    # non-idempotent mover (IC/IC) while every migrated stage was fine.
     print("=" * 66 + "\nDATASET\n" + "=" * 66, flush=True)
-    dataset_dir = os.path.join(CACHE, "datasets", dataset_name)
-    _run([sys.executable, "scripts/utilities/prepare_dataset_uc1.py", dataset_dir])
+    dataset_dir = ensure_dataset(dataset_name)
 
     defect_spec = os.path.join(dataset_dir, "defect_spec.jsonl")
     if not os.path.exists(defect_spec):
