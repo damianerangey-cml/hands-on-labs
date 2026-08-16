@@ -112,6 +112,14 @@ STAGES = {
                 "Publish the survivors as the next HyperDataset version",
                 "data_processing", "gpu"),
     "train": ("train_inspector.py", "Train the inspector", "training", "gpu"),
+    # The diagram's "Retrain YOUR inspection model" box. A Hugging Face
+    # checkpoint stands in for the customer's own detector, fine-tuned end to
+    # end on the latest published version -- swap DEFT_CUSTOMER_MODEL for any
+    # image-classification checkpoint and nothing else changes. Distinct from
+    # `train`, which is the frozen-backbone probe that measures each round.
+    "train-customer": ("train_customer.py",
+                       "Retrain the customer inspection model (ViT fine-tune)",
+                       "training", "gpu"),
 }
 
 
