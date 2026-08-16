@@ -207,7 +207,8 @@ def anomalygen_finetune(dataset_name="pcb-uc1",
         if "run_validation" in txt:
             txt = _re.sub(r"(run_validation\s*:\s*)\S+", r"\g<1>false", txt)
         else:
-            txt = _re.sub(r"(^trainer\s*:\s*$)", "\g<1>\n  run_validation: false",
+            txt = _re.sub(r"(^trainer\s*:\s*$)",
+                          "\\g<1>\n  run_validation: false",
                           txt, count=1, flags=_re.M)
         open(ag_config, "w").write(txt)
         print("---- generated config (in-training validation disabled) ----",
