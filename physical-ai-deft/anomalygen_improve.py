@@ -46,7 +46,7 @@ import os
 import statistics
 import sys
 
-from ag_common import CACHE, ensure_dataset, link_checkpoints, run as _run
+from ag_common import bind_task, CACHE, ensure_dataset, link_checkpoints, run as _run
 
 # NVIDIA's defaults, and the original pass this lab already runs.
 BASE_GUIDANCE = 7.0
@@ -123,7 +123,7 @@ def anomalygen_improve(dataset_name="pcb-uc1",
     """Run phases 5-7 over an existing generation run, in place under it."""
     from clearml import Task
 
-    task = Task.current_task()
+    task = bind_task()
     link_checkpoints()
 
     dataset_dir = ensure_dataset(dataset_name)

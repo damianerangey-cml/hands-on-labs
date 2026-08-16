@@ -82,10 +82,11 @@ def publish_synthetic(hyperdataset_name="PCB Inspection",
     silently skip every round after the first. Pass the real run id whenever the
     directory no longer carries it.
     """
+    from ag_common import bind_task
     import hyperdataset as hd
     from clearml import Task
 
-    task = Task.current_task()
+    task = bind_task()
     results = run_dir or _latest_run(dataset_name)
     csv_path = os.path.join(results, "SDG_result.csv")
     if not os.path.exists(csv_path):

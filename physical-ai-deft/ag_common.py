@@ -99,3 +99,24 @@ def require_hf_token():
             "HF_TOKEN not set. It should arrive from your platform's "
             "secret store -- fix that rather than passing it "
             "as a task argument, which would write it onto the task record.")
+
+
+def bind_task():
+    """The running ClearML task, bound EXPLICITLY -- or None outside a task.
+
+    Every stage used a bare `Task.current_task()`, which happens to be set
+    when the agent bootstraps a launch.py-created task and is None on a task
+    created any other way -- including `tasks.clone` over the API. A cloned
+    stage then does all its work and silently reports nothing: no scalars, no
+    debug samples, no registered model. The work succeeded, the record lied
+    by omission. `Task.init()` under an agent binds the executing task
+    regardless of how it was created; outside one (CLEARML_TASK_ID unset) we
+    return None rather than minting a stray task from somebody's laptop.
+    """
+    from clearml import Task
+    t = Task.current_task()
+    if t is not None:
+        return t
+    if os.environ.get("CLEARML_TASK_ID"):
+        return Task.init()
+    return None

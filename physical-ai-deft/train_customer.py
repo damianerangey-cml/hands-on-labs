@@ -34,7 +34,7 @@ score. "What is this model, and what made it?" is a lookup, not an email.
 import json
 import os
 
-from ag_common import CACHE, ensure_dataset
+from ag_common import bind_task, CACHE, ensure_dataset
 from train_inspector import _collect, _run_dirs
 
 HF_MODEL = os.environ.get("DEFT_CUSTOMER_MODEL", "google/vit-base-patch16-224-in21k")
@@ -58,7 +58,7 @@ def train_customer(hyperdataset_name="PCB Inspection",
 
     import hyperdataset as hd
 
-    task = Task.current_task()
+    task = bind_task()
     dataset_dir = ensure_dataset(dataset_name)
     results_dirs = _run_dirs(dataset_name)
 

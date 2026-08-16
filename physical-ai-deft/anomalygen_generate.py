@@ -35,8 +35,8 @@ import json
 import os
 import sys
 
-from ag_common import (CACHE, REPO_ROOT, ensure_dataset, link_checkpoints,
-                       run as _run)
+from ag_common import (CACHE, REPO_ROOT, bind_task, ensure_dataset,
+                       link_checkpoints, run as _run)
 
 
 # The step baked into NVIDIA's released PCB checkpoint (iter_000014000.pt).
@@ -152,7 +152,7 @@ def anomalygen_generate(dataset_name="pcb-uc1",
     """
     from clearml import Task
 
-    task = Task.current_task()
+    task = bind_task()
     if not os.environ.get("HF_TOKEN"):
         raise SystemExit("HF_TOKEN not set -- it should reach this pod from "
                          "wherever your platform keeps secrets, never as a "

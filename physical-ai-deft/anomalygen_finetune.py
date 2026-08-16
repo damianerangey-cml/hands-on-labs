@@ -55,7 +55,7 @@ mounted cache).
 import os
 import sys
 
-from ag_common import CACHE, REPO_ROOT, link_checkpoints, run as _run
+from ag_common import bind_task, CACHE, REPO_ROOT, link_checkpoints, run as _run
 
 IMAGE = "nvcr.io/nvidia/paidf-anomalygen:1.0.1"
 
@@ -100,7 +100,7 @@ def anomalygen_finetune(dataset_name="pcb-uc1",
     """Phase 0 + phase 1. Returns the trained checkpoint directory."""
     from clearml import Task
 
-    task = Task.current_task()
+    task = bind_task()
 
     if not os.environ.get("HF_TOKEN"):
         raise SystemExit(

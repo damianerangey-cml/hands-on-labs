@@ -60,7 +60,7 @@ version is the manifest that says which ones counted.
 import json
 import os
 
-from ag_common import CACHE, ensure_dataset
+from ag_common import bind_task, CACHE, ensure_dataset
 
 
 def _run_dirs(dataset_name):
@@ -162,7 +162,7 @@ def train_inspector(hyperdataset_name="PCB Inspection",
 
     import hyperdataset as hd
 
-    task = Task.current_task()
+    task = bind_task()
     dataset_dir = ensure_dataset(dataset_name)
     results_dirs = _run_dirs(dataset_name)
 

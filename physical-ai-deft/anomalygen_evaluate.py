@@ -29,7 +29,7 @@ import os
 import statistics
 import sys
 
-from ag_common import CACHE, ensure_dataset, link_checkpoints, run as _run
+from ag_common import bind_task, CACHE, ensure_dataset, link_checkpoints, run as _run
 
 
 def _latest_run(dataset_name):
@@ -51,7 +51,7 @@ def anomalygen_evaluate(dataset_name="pcb-uc1",
     """Run NVIDIA's eval and turn per-sample nn_score into accept/reject."""
     from clearml import Task
 
-    task = Task.current_task()
+    task = bind_task()
     # The evaluator loads its feature backbone by RELATIVE path
     # (checkpoints/nvidia/C-RADIO-V3/model.safetensors), so the cache has to be
     # linked in even though this stage downloads nothing.
