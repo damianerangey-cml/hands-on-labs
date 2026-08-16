@@ -142,6 +142,27 @@ def anomalygen_evaluate(dataset_name="pcb-uc1",
                            round(r["nn_score"], 4),
                            "accept" if r["nn_score"] >= nn_threshold else "reject"]
                           for r in sorted(scored, key=lambda x: -x["nn_score"])])
+
+        # DEBUG SAMPLES: the gate's verdicts, as pictures. Two panels --
+        # accepted and rejected -- each frame captioned with its class and
+        # measured nn_score, best-first for accepted and worst-first for
+        # rejected, so the panel shows the CONTRAST the numbers claim. This is
+        # the screenshot that answers "what does a reject even look like?".
+        def _gate_panel(verdict, rows_, order):
+            for r in sorted(rows_, key=order)[:12]:
+                p = r.get("path") or ""
+                if not (os.path.isabs(p) and os.path.exists(p)):
+                    cand = os.path.join(generated, os.path.basename(p))
+                    p = cand if os.path.exists(cand) else None
+                if p:
+                    dt = (r.get("anomaly_type") or "?").split("+")[-1]
+                    logger.report_image(
+                        title="gate: %s" % verdict,
+                        series="%s · nn=%.3f" % (dt, r["nn_score"]),
+                        iteration=0, local_path=p)
+
+        _gate_panel("accepted", accepted, lambda x: -x["nn_score"])
+        _gate_panel("rejected", rejected, lambda x: x["nn_score"])
         task.upload_artifact("per_sample", per_sample)
 
     return {"per_sample_csv": per_sample,

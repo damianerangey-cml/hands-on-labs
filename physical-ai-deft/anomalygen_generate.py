@@ -322,10 +322,51 @@ def anomalygen_generate(dataset_name="pcb-uc1",
 
     if task:
         logger = task.get_logger()
-        # One grid, not N rows: same iteration, distinct series.
-        for i, p in enumerate(made[:12]):
-            logger.report_image(title="AnomalyGen", series="synthetic_%02d" % i,
-                                iteration=0, local_path=p)
+
+        # DEBUG SAMPLES: the whole method in three images per sample -- the
+        # clean board, the mask AMP placed from its CAD, and the generated
+        # result. Grouped by defect class so the panel reads as evidence, not
+        # a dump. The manifest's paths are written relative to whatever
+        # directory NVIDIA's stage was in at the time, so resolve by basename
+        # against the run and dataset trees rather than trusting them.
+        def _resolve(name, roots=(out_dir, dataset_dir)):
+            if not name:
+                return None
+            if os.path.isabs(name) and os.path.exists(name):
+                return name
+            base = os.path.basename(name)
+            for root in roots:
+                for dirpath, _dirs, files in os.walk(root):
+                    if base in files:
+                        return os.path.join(dirpath, base)
+            return None
+
+        MAX_TRIPLETS = 12
+        shown = 0
+        for i, r in enumerate(rows):
+            if shown >= MAX_TRIPLETS:
+                print("(debug samples truncated at %d of %d triplets)"
+                      % (MAX_TRIPLETS, len(rows)), flush=True)
+                break
+            gen = _resolve(r.get("output_filename"))
+            if not gen:
+                continue
+            dt = (r.get("anomaly_type") or "?").split("+")[-1]
+            for series_name, path in (
+                    ("%02d · 1 clean" % i, _resolve(r.get("image_filename"))),
+                    ("%02d · 2 mask" % i, _resolve(r.get("mask_filename"))),
+                    ("%02d · 3 generated" % i, gen)):
+                if path:
+                    logger.report_image(title=dt, series=series_name,
+                                        iteration=0, local_path=path)
+            shown += 1
+        # Fallback for a run whose manifest is missing: at least show what was
+        # produced, so an empty panel always means "nothing generated".
+        if not shown:
+            for i, p in enumerate(made[:12]):
+                logger.report_image(title="AnomalyGen",
+                                    series="synthetic_%02d" % i,
+                                    iteration=0, local_path=p)
         if per_defect_counts:
             logger.report_table(
                 title="the allocation", series="asked vs got", iteration=0,
