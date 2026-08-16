@@ -86,9 +86,29 @@ def ensure_dataset(dataset_name, cache=None):
     got there first.
     """
     d = os.path.join(cache or CACHE, "datasets", dataset_name)
-    if not os.path.isdir(d):
-        print("preparing NVIDIA's dataset at %s" % d, flush=True)
-        run([sys.executable, "scripts/utilities/prepare_dataset_uc1.py", d])
+    # `defect_spec.jsonl` is the completeness marker: it is the last thing a
+    # successful prepare leaves and the first thing every consumer reads.
+    if os.path.exists(os.path.join(d, "defect_spec.jsonl")):
+        return d
+    import shutil
+    if os.path.isdir(d):
+        # Present but incomplete = a previous prepare died mid-move, or ran
+        # twice. NVIDIA's prepare script is NOT idempotent -- re-moving a
+        # directory into a populated tree nests it (IC/IC) and every later
+        # stage trips over the wreckage. Half a dataset is worse than none.
+        print("removing incomplete dataset tree at %s" % d, flush=True)
+        shutil.rmtree(d)
+    tmp = d + ".preparing"
+    shutil.rmtree(tmp, ignore_errors=True)
+    print("preparing NVIDIA's dataset at %s" % d, flush=True)
+    run([sys.executable, "scripts/utilities/prepare_dataset_uc1.py", tmp])
+    if not os.path.exists(os.path.join(tmp, "defect_spec.jsonl")):
+        raise SystemExit("prepare finished without defect_spec.jsonl -- refusing "
+                         "to install an incomplete dataset tree")
+    # Atomic: consumers either see the whole prepared tree or none of it, even
+    # if two stages race on a cold cache.
+    os.makedirs(os.path.dirname(d), exist_ok=True)
+    os.rename(tmp, d)
     return d
 
 
