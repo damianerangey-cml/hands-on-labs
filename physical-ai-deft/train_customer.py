@@ -144,6 +144,44 @@ def train_customer(hyperdataset_name="PCB Inspection",
     names = [id2label[t] for t in sorted(set(truth))]
     report = classification_report(truth, preds, target_names=names,
                                    zero_division=0, output_dict=True)
+
+    # THE KPI MECHANISM -- with its resolution stated, or the number lies.
+    #
+    # The line KPI is false accepts at 100% defect recall: set the operating
+    # point so no defect escapes, then count how many good boards get flagged
+    # (overkill). Computed from P(clean) over the same holdout: the threshold
+    # is the loosest one at which every true defect is still flagged.
+    #
+    # On 86 demo images the holdout holds ~2 clean boards, so this number moves
+    # in steps of 50% -- the MECHANISM is what runs here; the resolution needs
+    # a customer-scale holdout (guide, "What is not finished").
+    kpi = None
+    clean_id = label2id.get("clean")
+    if clean_id is not None:
+        with torch.no_grad():
+            probs = []
+            for x, _y in batches(te_r, shuffle=False):
+                probs += torch.softmax(net(**x).logits, -1)[:, clean_id].cpu().tolist()
+        y_true = [label2id[items[j][1]] for j in te_r]
+        defect_scores = [1 - pc for pc in probs]
+        d = [s_ for s_, t in zip(defect_scores, y_true) if t != clean_id]
+        g = [s_ for s_, t in zip(defect_scores, y_true) if t == clean_id]
+        if d and g:
+            thr_kpi = min(d)                      # loosest bar that catches all
+            overkill = sum(1 for s_ in g if s_ >= thr_kpi)
+            kpi = overkill / len(g)
+            print("KPI: false accepts @ 100%% defect recall = 0 by construction;"
+                  " overkill (good boards flagged) = %d/%d = %.2f"
+                  % (overkill, len(g), kpi), flush=True)
+            print("  resolution: %d clean boards in holdout -> steps of %.0f%%"
+                  " -- mechanism proven, number needs customer data"
+                  % (len(g), 100.0 / len(g)), flush=True)
+            if logger:
+                logger.report_scalar("KPI @ 100% defect recall",
+                                     "overkill rate", value=kpi, iteration=0)
+                logger.report_scalar("KPI @ 100% defect recall",
+                                     "clean boards in holdout", value=len(g),
+                                     iteration=0)
     print("=" * 66, flush=True)
     print("final holdout accuracy %.3f on %d REAL images" % (acc, len(te_r)),
           flush=True)
@@ -169,6 +207,7 @@ def train_customer(hyperdataset_name="PCB Inspection",
             "synthetic_accepted": int(len(syn_idx)),
             "nn_threshold": thr,
             "holdout_accuracy": float(acc),
+            "kpi_overkill_at_full_recall": kpi,
             "epochs": EPOCHS,
         })
         # UPLOADED, not merely recorded: the weights go to the platform's file

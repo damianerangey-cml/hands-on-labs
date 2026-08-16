@@ -80,13 +80,13 @@ SETUP = "python3 -m pip install -q --no-input clearml scikit-learn"
 
 STAGES = {
     # No GPU: reads 177 files, writes frames.
-    "register": ("register_real.py", "Register the real data (HyperDataset v1-real)",
+    "register": ("register_real.py", "STEP 1 - Register the real data (HyperDataset v1-real)",
                  "data_processing", "cpu"),
-    "rounds": ("run_rounds.py", "DEFT loop -- generate, score, publish, train",
+    "rounds": ("run_rounds.py", "REFERENCE LOOP - all steps, fixed policy, no agent",
                "training", "gpu"),
-    "generate": ("anomalygen_generate.py", "AnomalyGen -- place masks and generate",
+    "generate": ("anomalygen_generate.py", "PHASES 2+3 - Place masks + generate defects (AnomalyGen)",
                  "data_processing", "gpu"),
-    "evaluate": ("anomalygen_evaluate.py", "AnomalyGen -- score against the real data",
+    "evaluate": ("anomalygen_evaluate.py", "PHASE 4 - The gate: score every frame vs real",
                  "data_processing", "gpu"),
     # The 48 GB lane. NVIDIA's phase 1 wants 4.54 GiB more than a 24 GB card
     # has (measured twice), so it goes to the `gpu48` role rather than `gpu`.
@@ -96,10 +96,10 @@ STAGES = {
     # `deft.set_queues(gpu48=False)` and skip this stage; the other six phases
     # run on 24 GB.
     "finetune": ("anomalygen_finetune.py",
-                 "AnomalyGen phase 1 -- few-shot fine-tune (48GB)",
+                 "PHASE 1 - Fine-tune the GENERATOR, few-shot (48GB card)",
                  "training", "gpu48"),
     "improve": ("anomalygen_improve.py",
-                "AnomalyGen -- search, keep best, filter and regenerate",
+                "PHASES 5-7 - Search params, keep best, regenerate rejects",
                 "data_processing", "gpu"),
     # Publish needs no GPU but runs on the GPU queue anyway, and the reason is
     # worth knowing: the CPU queue's pod template DELIBERATELY drops the
@@ -109,16 +109,16 @@ STAGES = {
     # "no SDG_result.csv" -- which reads like generation never ran, rather than
     # like the volume is missing.
     "publish": ("publish_synthetic.py",
-                "Publish the survivors as the next HyperDataset version",
+                "STEP 4 - Publish the survivors as the next version",
                 "data_processing", "gpu"),
-    "train": ("train_inspector.py", "Train the inspector", "training", "gpu"),
+    "train": ("train_inspector.py", "STEP 5 - Measure the round (frozen probe)", "training", "gpu"),
     # The diagram's "Retrain YOUR inspection model" box. A Hugging Face
     # checkpoint stands in for the customer's own detector, fine-tuned end to
     # end on the latest published version -- swap DEFT_CUSTOMER_MODEL for any
     # image-classification checkpoint and nothing else changes. Distinct from
     # `train`, which is the frozen-backbone probe that measures each round.
     "train-customer": ("train_customer.py",
-                       "Retrain the customer inspection model (ViT fine-tune)",
+                       "Retrain YOUR inspection model (HF ViT, end to end)",
                        "training", "gpu"),
 }
 
@@ -141,6 +141,8 @@ def launch(stage, queue=None, env=None, dry_run=False):
     from clearml import Task
 
     script, name, ttype, default_queue = STAGES[stage]
+    if (env or {}).get("DEFT_BASELINE"):
+        name += " -- CONTROL: real images only"
 
     # RESOLVE THE QUEUE FIRST -- BEFORE creating anything.
     #
