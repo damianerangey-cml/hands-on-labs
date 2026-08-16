@@ -189,9 +189,30 @@ def anomalygen_finetune(dataset_name="pcb-uc1",
           # and it changes optimisation dynamics rather than the method.
           "--batch-size", str(batch_size),
           "--output", ag_config])
+    # DISABLE IN-TRAINING VALIDATION -- it is what OOMs a 48 GB card.
+    #
+    # Measured on an L40S (44.4 GiB usable): training itself fits, but NVIDIA's
+    # trainer also runs a full diffusion inference pass as validation
+    # (validate -> inpaint_image -> tokenizer.decode) NEXT TO 43.5 GiB of live
+    # training state, and that combination wants more card than exists here.
+    # NVIDIA trained on 80 GB parts, where both fit together.
+    #
+    # Turning it off costs nothing this lab wants: the pipeline's OWN phase 4
+    # scores every generated frame against the real data anyway -- a stronger
+    # check than the trainer's mid-run sample. Config-level, via NVIDIA's own
+    # knob in the file their generator wrote; their code is untouched.
     if os.path.exists(ag_config):
-        print("---- generated config ----", flush=True)
-        print(open(ag_config).read(), flush=True)
+        import re as _re
+        txt = open(ag_config).read()
+        if "run_validation" in txt:
+            txt = _re.sub(r"(run_validation\s*:\s*)\S+", r"\g<1>false", txt)
+        else:
+            txt = _re.sub(r"(^trainer\s*:\s*$)", "\g<1>\n  run_validation: false",
+                          txt, count=1, flags=_re.M)
+        open(ag_config, "w").write(txt)
+        print("---- generated config (in-training validation disabled) ----",
+              flush=True)
+        print(txt, flush=True)
         if task:
             task.upload_artifact("ag_config", ag_config)
 
@@ -205,7 +226,10 @@ def anomalygen_finetune(dataset_name="pcb-uc1",
               # The OOM above reported 3.33 GiB "reserved but unallocated" --
               # fragmentation, not genuine demand. expandable_segments is
               # PyTorch's own remedy, recommended in the error text itself.
-              "PYTORCH_ALLOC_CONF": "expandable_segments:True"})
+              # Both spellings: torch 2.10 reads PYTORCH_ALLOC_CONF and warns
+              # on the old name; older builds only read the old name.
+              "PYTORCH_ALLOC_CONF": "expandable_segments:True",
+              "PYTORCH_CUDA_ALLOC_CONF": "expandable_segments:True"})
 
     out_root = os.path.join(CACHE, "results", "anomaly_gen", dataset_name)
     trained = None
