@@ -34,16 +34,19 @@ K8S_QUEUE = "train-k8s-0.5xgpu"     # consumed by the K8s glue agent (CFGI 0.500
 def check_planes():
     """Sanity-gate: both training queues exist before we spend GPU time.
 
-    Runs as a function step (code travels with the step, no repo needed).
+    Runs as a function step. IMPORTANT: function steps are serialized
+    STANDALONE — module globals do NOT travel with them — so the queue names
+    are inlined here, not read from the module constants.
     """
     from clearml.backend_api.session.client import APIClient
 
+    slurm_q, k8s_q = "train-0.5xgpu", "train-k8s-0.5xgpu"
     client = APIClient()
     names = {q.name for q in client.queues.get_all()}
-    missing = [q for q in (SLURM_QUEUE, K8S_QUEUE) if q not in names]
+    missing = [q for q in (slurm_q, k8s_q) if q not in names]
     if missing:
         raise RuntimeError("training queues missing: %s" % missing)
-    print("both planes reachable: %s (Slurm), %s (Kubernetes)" % (SLURM_QUEUE, K8S_QUEUE))
+    print("both planes reachable: %s (Slurm), %s (Kubernetes)" % (slurm_q, k8s_q))
     return True
 
 
@@ -51,19 +54,22 @@ def crown_champion(slurm_task_id, k8s_task_id):
     """Compare the two runs' voice_score and tag the winner's model "champion".
 
     The judge reads scalars off both tasks and never asks which scheduler ran
-    which — the registry and the metrics are scheduler-neutral.
+    which — the registry and the metrics are scheduler-neutral. Standalone
+    function step: everything imported inside, tagging via the raw models.edit
+    endpoint (deterministic across SDK versions).
     """
     from clearml import Task
 
     def score(tid):
         t = Task.get_task(task_id=tid)
         m = t.get_last_scalar_metrics() or {}
-        # voice_score is reported as a single-value scalar: metric "voice_score"
-        # (fall back to Summary/voice_score if the reporter nested it).
         for metric, variants in m.items():
-            for variant, vals in variants.items():
-                if "voice_score" in (metric, variant):
-                    return float(vals.get("last", 0.0)), t
+            for variant, vals in (variants or {}).items():
+                if "voice_score" in (str(metric), str(variant)):
+                    try:
+                        return float(vals.get("last", 0.0)), t
+                    except (TypeError, ValueError):
+                        return 0.0, t
         return 0.0, t
 
     s_score, s_task = score(slurm_task_id)
@@ -71,14 +77,20 @@ def crown_champion(slurm_task_id, k8s_task_id):
     print("voice_score — Slurm: %.3f  Kubernetes: %.3f" % (s_score, k_score))
 
     winner = s_task if s_score >= k_score else k_task
-    label = "Slurm" if winner is s_task else "Kubernetes"
-    models = winner.get_models().get("output") or []
+    label = "slurm" if winner is s_task else "kubernetes"
+    models = (winner.get_models() or {}).get("output") or []
     if not models:
         raise RuntimeError("winning task %s registered no model" % winner.id)
     champion = models[-1]
     # Tag on the MODEL, not the task: the serving act picks models by tag/UUID.
-    from clearml import Model
-    Model(model_id=champion.id).tags = ["champion", "trained-on-%s" % label.lower()]
+    from clearml.backend_api import Session
+    res = Session().send_request(
+        service="models", action="edit", method="post",
+        json={"model": champion.id,
+              "tags": ["champion", "trained-on-%s" % label]})
+    if res.status_code != 200:
+        raise RuntimeError("models.edit failed: HTTP %s %s"
+                           % (res.status_code, res.text[:300]))
     print("champion: %s (%s, trained on %s)" % (champion.id, champion.name, label))
     return champion.id
 
