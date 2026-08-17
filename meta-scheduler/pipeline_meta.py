@@ -130,6 +130,7 @@ def _adopt_pipeline_project() -> None:
     stack (same RBAC blindness as _seed_task_id).
     """
     import os
+    import re
     from clearml.backend_api import Session
 
     task_id = os.environ.get("CLEARML_TASK_ID")
@@ -148,7 +149,7 @@ def _adopt_pipeline_project() -> None:
 
     def ensure_project(name, tags):
         found = call("projects", "get_all_ex",
-                     {"name": "^%s$" % name.replace("(", r"\(").replace(")", r"\)"),
+                     {"name": "^%s$" % re.escape(name),
                       "search_hidden": True,
                       "only_fields": ["id", "name"]}).get("projects") or []
         for p in found:
