@@ -23,7 +23,7 @@ two-scheduler estate.
 """
 from clearml import PipelineController
 
-PROJECT = "Examples"
+PROJECT = "ClearMLBot - Fine-Tune & Serve (Slurm + K8s)"
 BASE_TASK = "Fine-tune (Slurm)"
 
 CPU_QUEUE = "1XCPU"
