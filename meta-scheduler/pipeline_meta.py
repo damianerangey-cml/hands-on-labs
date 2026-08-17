@@ -95,6 +95,26 @@ def crown_champion(slurm_task_id, k8s_task_id):
     return champion.id
 
 
+def _seed_task_id() -> str:
+    """Resolve the seeded fine-tune task by NAME via tasks.get_all.
+
+    The obvious route — add_step(base_task_project=..., base_task_name=...) —
+    resolves the project first via `projects.get_all`, and on this Enterprise
+    stack that endpoint returns an EMPTY list under tenant RBAC (while
+    `tasks.get_all` / the *_ex endpoints see everything). Passing
+    base_task_id sidesteps the project lookup entirely.
+    """
+    import re
+    from clearml.backend_api.session.client import APIClient
+
+    tasks = APIClient().tasks.get_all(
+        name="^%s$" % re.escape(BASE_TASK), only_fields=["id", "name"])
+    for t in tasks:
+        if t.name == BASE_TASK:
+            return t.id
+    raise RuntimeError("seed task %r not found" % BASE_TASK)
+
+
 def main() -> None:
     pipe = PipelineController(
         name="Cross-Scheduler Pipeline",
@@ -109,14 +129,15 @@ def main() -> None:
         execution_queue=CPU_QUEUE, cache_executed_step=False)
 
     # The SAME seeded task, cloned twice — only the queue differs. That is the
-    # entire point of this pipeline.
+    # entire point of this pipeline. Resolved by id (see _seed_task_id).
+    seed_id = _seed_task_id()
     pipe.add_step(
         name="train_on_slurm",
-        base_task_project=PROJECT, base_task_name=BASE_TASK,
+        base_task_id=seed_id,
         parents=["check_planes"], execution_queue=SLURM_QUEUE)
     pipe.add_step(
         name="train_on_kubernetes",
-        base_task_project=PROJECT, base_task_name=BASE_TASK,
+        base_task_id=seed_id,
         parents=["check_planes"], execution_queue=K8S_QUEUE)
 
     pipe.add_function_step(
