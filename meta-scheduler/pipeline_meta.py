@@ -115,7 +115,56 @@ def _seed_task_id() -> str:
     raise RuntimeError("seed task %r not found" % BASE_TASK)
 
 
+def _adopt_pipeline_project() -> None:
+    """Move this (agent-run) controller task into the hidden pipeline leaf
+    project BEFORE PipelineController initializes.
+
+    Why: PipelineController._create_pipeline_projects tags `task.project`
+    with system_tags ["pipeline","hidden"] (it assumes the controller task
+    was born inside "<project>/.pipelines/<name>", as local runs are). Our
+    controller is a seeded draft living in "Examples", so without this move
+    the SDK hides the ENTIRE Examples project from the dashboard — observed
+    live 2026-08-17. Moving self into the leaf first makes the SDK's
+    assumption true. Project existence checks use projects.get_all_ex
+    because plain projects.get_all returns [] for tenant users on this
+    stack (same RBAC blindness as _seed_task_id).
+    """
+    import os
+    from clearml.backend_api import Session
+
+    task_id = os.environ.get("CLEARML_TASK_ID")
+    if not task_id:
+        return  # local/debug run — the SDK's normal flow applies
+
+    session = Session()
+
+    def call(service, action, payload):
+        r = session.send_request(service=service, action=action,
+                                 json=payload, method="post")
+        if r.status_code != 200:
+            raise RuntimeError("%s.%s -> %s: %s" % (service, action,
+                                                    r.status_code, r.text[:300]))
+        return r.json().get("data", {})
+
+    def ensure_project(name, tags):
+        found = call("projects", "get_all_ex",
+                     {"name": "^%s$" % name.replace("(", r"\(").replace(")", r"\)"),
+                      "search_hidden": True,
+                      "only_fields": ["id", "name"]}).get("projects") or []
+        for p in found:
+            if p.get("name") == name:
+                return p["id"]
+        return call("projects", "create",
+                    {"name": name, "system_tags": tags})["id"]
+
+    ensure_project("%s/.pipelines" % PROJECT, ["hidden"])
+    leaf = ensure_project("%s/.pipelines/%s" % (PROJECT, "Cross-Scheduler Pipeline"),
+                          ["pipeline", "hidden"])
+    call("tasks", "edit", {"task": task_id, "project": leaf, "force": True})
+
+
 def main() -> None:
+    _adopt_pipeline_project()
     pipe = PipelineController(
         name="Cross-Scheduler Pipeline",
         project=PROJECT,
