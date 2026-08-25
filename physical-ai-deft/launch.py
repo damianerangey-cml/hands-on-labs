@@ -181,7 +181,17 @@ def launch(stage, queue=None, env=None, dry_run=False):
                    # stage portable to any deployment instead of only to one
                    # whose pods happen to run as root.
                    "-e CLEARML_AGENT__AGENT__VCS_CACHE__PATH=/tmp/vcs-cache",
-                   "-e CLEARML_AGENT__AGENT__PIP_DOWNLOAD_CACHE__PATH=/tmp/pip-cache"]
+                   "-e CLEARML_AGENT__AGENT__PIP_DOWNLOAD_CACHE__PATH=/tmp/pip-cache",
+                   # And the SDK's own cache, which is a different thing again:
+                   # the agent bind-mounts a host directory at
+                   # /clearml_agent_cache and points the SDK there, so a uid
+                   # 10000 task hits
+                   #
+                   #   Failed creating cache folder /clearml_agent_cache/storage
+                   #
+                   # No env var can un-mount that, but CLEARML_CACHE_DIR moves
+                   # the SDK off it entirely.
+                   "-e CLEARML_CACHE_DIR=/tmp/clearml-cache"]
     for k, v in sorted((env or {}).items()):
         docker_args.append("-e %s=%s" % (k, v))
 
