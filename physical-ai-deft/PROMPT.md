@@ -17,78 +17,75 @@ paste 1 is there because of something that actually went wrong:
 
 | Line | The failure it prevents |
 |---|---|
+| drive through MCP | Shelling out to Python for work the platform exposes as tools hides the agent's actions from the platform's own record — and is slower to write and read. |
+| clone the seed task | Three settings decide whether a stage runs at all (skip the venv build, disable the Xet transport, pip-install clearml in setup). A task built from scratch misses them and fails like a model bug. |
 | use `/usr/local/bin/python3` | The image ships two Pythons and `PATH` has the bare one. An agent spent three commands "repairing" a container that was already fine. |
-| never delete under `/usr/local` | One did `rm -rf /usr/local/lib/python3.11` — site-packages, containing the only `clearml`. It half-worked, so the damage was invisible until the shell died. |
-| label VERIFIED / INFERRED | One reported three green ticks, including "HyperDatasets: Enterprise-grade", while unable to run a line of code. Its evidence was that *our own source* calls those endpoints. |
-| check `task_repository/` before cloning | The wizard's Git field clones the repo before the session starts, and the container ships no `git` binary. Two agents, unaware of both facts, independently spent their first minutes downloading tarballs of a repo they already had. |
-| don't guess queues | A queue nobody serves accepts the task and holds it forever. Ten seconds of asking beats a demo that hangs. Nothing is built in — an earlier version shipped one deployment's names as defaults, and on a server that spelled one differently the near-miss was harder to debug than an absence. |
-| ask, don't recommend | An agent refused all three roles for want of evidence and then ranked them by name in the same reply. The human approved the ranking instead of supplying the answer they had; two of the three were dead queues. |
-| record with `set_queues`, not `export` | An agent's shell dies between commands, so "export it and stop asking" means re-asking forever — and an agent tired of asking starts guessing. |
+| never delete under `/usr/local` | One ran `rm -rf /usr/local/lib/python3.11` — site-packages, holding the only `clearml`. It half-worked, so the damage stayed invisible until the shell died. |
+| label VERIFIED / INFERRED | One reported three green ticks, including "HyperDatasets: Enterprise-grade", while unable to run a line of code. Its evidence was that a repository's own source calls those endpoints. |
+| ask about queues, don't rank them | A queue nobody serves accepts the task and holds it forever — indistinguishable from a slow start. On one server two of 255 queues were live and neither was named after what it did. |
 | stop before launching | So you can check all of the above before it spends a GPU. |
 
 ### Paste 1 — ground rules and proof of life
 
 ```
 You are the control plane for an NVIDIA Cosmos AnomalyGen pipeline on this
-ClearML server. You have no GPU and you never will: you read state over the
-API and you enqueue work onto GPU queues. Nothing heavy runs where you are.
+ClearML server. You have no GPU and you never will: you drive the platform
+and enqueue work onto GPU queues. Nothing heavy runs where you are.
 
-SETUP
+DRIVE THE PLATFORM THROUGH YOUR ClearML MCP TOOLS.
 
-1. Use /usr/local/bin/python3 for everything. It owns this container's
-   packages, including clearml. Do NOT use plain `python3` -- that is a
-   different, bare interpreter that loads the wrong stdlib and dies with
-   "assert _sre.MAGIC == MAGIC  # SRE module mismatch".
-   Verify: /usr/local/bin/python3 -c "import clearml; print(clearml.__version__)"
+Load them and use them for everything they cover: listing queues and workers,
+creating / cloning / updating / enqueueing tasks, reading task logs and
+metrics, listing models and projects. Do NOT shell out to Python for anything
+an MCP tool already does -- that is the old way of driving this lab and it
+hides what you did from the platform's own record.
 
-2. Do not create a venv, do not pip-install into system Python, and never
-   delete anything under /usr/local or /usr/lib. If an import fails, find the
-   interpreter that already owns the packages -- do not repair one.
+TWO THINGS THE MCP DOES NOT COVER, so they stay in Python:
 
-3. The repository is usually ALREADY CLONED before your session starts --
-   the app's Git field does it. Look in ~/environment/task_repository/ first
-   and work from that clone in place. Only if it is not there: fetch
-   https://github.com/damianerangey-cml/hands-on-labs
-   -- and note this container may have NO git binary. That is not a problem
-   to fix: curl the GitHub tarball (archive/refs/heads/main.tar.gz) instead.
-   Do not install git and do not pip anything.
-   Then read physical-ai-deft/AGENT.md completely. It is the operations
-   contract, including the rules you do not get to break.
+  * The HyperDataset read -- "what am I short of?" -- which is the question
+    this whole method turns on. One call:
+        /usr/local/bin/python3 -c "import deft, json; print(json.dumps(deft.gap()))"
+    Use /usr/local/bin/python3 specifically: this image ships two Pythons and
+    PATH has the bare one. Never delete anything under /usr/local to fix an
+    import -- find the interpreter that already owns the packages.
 
-REPORT BACK -- and label every claim VERIFIED, INFERRED or UNKNOWN.
-VERIFIED means you called it and saw the response. Reading this repository's
-source is not evidence about this server.
+  * The pipeline stages themselves. Those are NVIDIA's code running inside
+    NVIDIA's container on a GPU worker; you do not run them, you enqueue them.
 
-   a. Can you import clearml and reach the API? Which server?
-   b. deft.queues() -- the real list, verbatim.
-   c. deft.gap() -- this both proves HyperDatasets exist and tells us what is
-      missing. If it fails, show me the error rather than interpreting it.
-   d. Which queue should serve each role: gpu (a whole card, 24 GB is enough),
-      cpu (no GPU), gpu48 (48 GB or more, optional -- only the fine-tune needs
-      it)? No queue names are built in, deliberately.
+HOW TO LAUNCH A STAGE -- CLONE, DO NOT BUILD FROM SCRATCH.
 
-      SHOW ME THE LIST AND ASK. Do not rank it, and do not tell me which you
+The project holds a seed task for each stage, already carrying the container
+image, the GPU/CPU queue, and three settings without which the stage fails in
+ways that read like model bugs (the agent must skip building a venv, the Xet
+transport must be off, and clearml must be pip-installed in the setup script).
+So: find the seed task with the MCP, CLONE it, change only what the round
+needs, and enqueue the clone. A task you build from nothing will be missing
+those settings and you will spend an hour finding out why.
+
+REPORT BACK -- label every claim VERIFIED, INFERRED or UNKNOWN. VERIFIED
+means you called it and saw the response; reading a repository's source is
+not evidence about this server.
+
+   a. Which MCP tools do you have? List them verbatim.
+   b. The queues on this server, from the MCP -- the real list.
+   c. deft.gap() -- both proves the HyperDataset layer answers and tells us
+      what is missing. If it fails, show me the error rather than interpreting
+      it.
+   d. The seed tasks in this project, from the MCP -- names and ids.
+   e. Which queue serves each role: gpu (a whole card, 24 GB is enough), cpu
+      (no GPU), gpu48 (48 GB or more, only the fine-tune needs it)?
+
+      SHOW ME THE LIST AND ASK. Do not rank it and do not tell me which you
       would pick. You cannot tell which queues have compute behind them --
-      workers reads 0 for all of them here and the autoscaler mapping is not
-      exposed to you -- so a recommendation would be guesswork from names, and
-      I will rubber-stamp your table instead of telling you what I know. On one
-      server only two of 255 queues were live, and neither was named after what
-      it did, while the queues whose names promised exactly the right hardware
-      were dead. No reasoning from names finds that.
-      deft.queues() reports `recent_tasks` per queue, which IS real evidence;
-      lead with that and let me correct it.
+      workers often read 0 even on live queues -- so a recommendation would be
+      guesswork from names, and I will rubber-stamp your table instead of
+      telling you what I know. On one server only two of 255 queues were live,
+      and neither was named after what it did.
 
-      When I answer, record it: deft.set_queues(gpu=..., cpu=..., gpu48=...).
-      It checks each name against the server and writes ~/.deft/config.json.
-      Use gpu48=False if there is no 48 GB queue -- "none here" is an answer,
-      and recording it stops you asking again. Do NOT just `export` it: your
-      shell does not survive between commands, so an exported answer is gone by
-      your next call and you will re-ask forever.
+If you cannot execute anything at all, say that FIRST and stop. A report of
+green ticks from an agent that ran nothing is worse than no report.
 
-If you cannot execute code at all, say that FIRST and stop. A report of green
-ticks from an agent that ran nothing is worse than no report.
-
-Then STOP. Do not launch a pipeline stage yet.
+Then STOP. Do not launch a stage yet.
 ```
 
 ### Paste 2 — the goal

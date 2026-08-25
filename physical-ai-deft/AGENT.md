@@ -295,44 +295,69 @@ volume is.
 
 ---
 
-## The operations
+## The operations — MCP first
 
 **You have no GPU and you never will.** This session is a control plane: you
-read state over the API and you enqueue work. Every stage that touches a GPU,
-or the shared cache, runs as a task on a queue. That is the design, not a
-limitation to work around — it is also why an agent driving this loop cannot
-exceed the permissions of whoever launched it.
+drive the platform and you enqueue work. Every stage that touches a GPU or the
+shared cache runs as a task on a queue. That is the design, not a limitation to
+work around — it is also why an agent driving this loop cannot exceed the
+permissions of whoever launched it.
 
-### What you run locally — API reads only
+**Use your ClearML MCP tools for everything they cover.** They are the native
+way to drive this platform, and the actions land on the platform's own record
+rather than in your shell scrollback:
 
-| Call | What it does |
+| What you need | How |
 |---|---|
-| `deft.gap(target=60)` | The shortfall, from server-side label counts. ~1s, no pixels move. |
-| `deft.history()` | Every published version and registered model so far. |
-| `deft.queues()` | What queues actually exist here. |
-| `deft.pick_queue("gpu")` | Resolves a queue for a role, or refuses and asks. |
-| `deft.set_queues(gpu=…, cpu=…)` | Records the answer, once, after checking it exists. |
+| What queues exist, and which workers serve them | MCP — list queues / list workers |
+| Launch a stage | MCP — **clone** the stage's seed task, update what the round needs, enqueue |
+| Watch a running stage | MCP — read task logs, read task metrics |
+| What ran, what it scored | MCP — list tasks, get task metrics, compare runs |
+| Which models exist and what made them | MCP — list models |
+| Bring up a serving endpoint | MCP — launch app instance |
 
-### What you launch — everything else
+Do not shell out to Python for any of the above. Older versions of this lab
+wrapped all of it in `launch.py` and `deft.py` helpers; where an MCP tool
+exists it is the better path and the helper is legacy.
 
-| Command | What you decide |
+### Clone the seed task — do not build one from scratch
+
+Three settings decide whether a stage runs at all, and each fails in a way that
+reads like a model bug rather than a config mistake: the agent must skip
+building a virtualenv (NVIDIA's image already carries torch and every
+dependency), the Xet transport must be disabled, and `clearml` has to be
+pip-installed in the setup script *because* the venv step is skipped.
+
+A seed task per stage already carries all three, plus the container image and
+the right queue. So the launch pattern is always:
+
+1. find the seed task (MCP, list tasks in this project)
+2. **clone** it
+3. change only what this round needs — the entry point for a different stage,
+   or an env value like the run id
+4. enqueue the clone onto the queue for that role
+
+A task built from nothing is missing those three settings, and you will spend
+an hour discovering why a stage that "should work" does not.
+
+### The two things that are still Python
+
+| Call | Why it is not MCP |
 |---|---|
-| `launch.py register` | Nothing; run it once. |
-| `launch.py train --baseline` | **Run this before generating anything.** It is the control. |
-| `launch.py generate --gap … --run-id …` | How many, of what. The run id must be unique. |
-| `launch.py evaluate --run-dir …` | The threshold, or let it default to the batch median. |
-| `launch.py improve --run-dir … --search-rounds N` | Whether the search is worth the GPU. |
-| `launch.py publish --run-dir …/searched --run-id …` | Nothing; the gate already decided what earns a label. |
-| `launch.py train --name inspector-roundN` | When. |
+| `deft.gap(target=60)` | The HyperDataset label counts — the question this whole method turns on. The MCP does not cover datasets; this reads them server-side in about a second, no pixels moved. |
+| The stage scripts themselves | NVIDIA's code, running inside NVIDIA's container on a GPU worker. You never *run* these; you enqueue a task that does. |
 
-Each prints a task id and a URL. Poll the task, read what it reported, then
-decide the next move from that — not from a plan you made before it ran.
-
-`deft.py` also exposes in-process functions with those names
-(`deft.generate(...)` and so on). **They are not for you.** They exist for code
-already running *inside* a task, which is how `run_rounds.py` uses them. Called
-from here they fail on a missing `/cache` with a message that reads like
+`deft.py` also exposes in-process functions (`deft.generate(...)` and so on).
+**They are not for you.** They exist for code already running *inside* a task.
+Called from here they fail on a missing `/cache` with a message that reads like
 generation never happened.
+
+### The order that matters
+
+Whatever drives it, a round is: read the gap → allocate against it → generate →
+score → publish the survivors → measure. And **the control comes first**: train
+on real images only, once, before anything is generated. Without that number
+"the synthetic data helped" is not a claim anyone can check.
 
 ## Rules you do not get to break
 
