@@ -25,7 +25,55 @@ import sys
 # somewhere else, and then every stage fails on a relative script path with a
 # bare "No such file or directory" that says nothing about why.
 REPO_ROOT = os.environ.get("DEFT_AG_REPO_ROOT", "/workspace/paidf-anomalygen")
-CACHE = os.environ.get("DEFT_CACHE", "/cache")
+def _resolve_cache():
+    """The shared cache, or a writable fallback -- announced, never silent.
+
+    Every stage keeps NVIDIA's ~22 GB of checkpoints and its generated frames
+    here, and stages hand work to each other through it. On Kubernetes that is
+    a PVC mounted at /cache on every task pod. On an autoscaler VM worker there
+    may be no such volume, and the task -- running as uid 10000 -- cannot even
+    create /cache at the filesystem root:
+
+        PermissionError: [Errno 13] Permission denied: '/cache'
+
+    Falling back silently would be worse than crashing: the checkpoints would
+    re-download every stage, and the frames one stage generates would not exist
+    for the next, which surfaces later as "no SDG_result.csv" and reads like
+    generation never ran. So fall back, but say exactly what it costs.
+    """
+    want = os.environ.get("DEFT_CACHE") or "/cache"
+    try:
+        os.makedirs(want, exist_ok=True)
+        probe = os.path.join(want, ".deft-write-probe")
+        with open(probe, "w") as fh:
+            fh.write("x")
+        os.remove(probe)
+        return want
+    except OSError as e:
+        fallback = "/tmp/deft-cache"
+        os.makedirs(fallback, exist_ok=True)
+        print("=" * 70, flush=True)
+        print("NO SHARED CACHE AT %s (%s)" % (want, e.__class__.__name__), flush=True)
+        print("Falling back to %s, which lives INSIDE this container." % fallback,
+              flush=True)
+        print("", flush=True)
+        print("  * NVIDIA's ~22 GB of checkpoints will download again for EVERY", flush=True)
+        print("    stage, because nothing here survives the container.", flush=True)
+        print("  * frames this stage generates will NOT be visible to the next", flush=True)
+        print("    one, so a later stage may fail with 'no SDG_result.csv' --", flush=True)
+        print("    which reads as if generation never ran.", flush=True)
+        print("", flush=True)
+        print("A multi-stage run needs shared, writable storage at %s:" % want, flush=True)
+        print("  Kubernetes  - a PVC mounted on every task pod", flush=True)
+        print("  VM worker   - a host path bind-mounted into the container, or", flush=True)
+        print("                run the whole loop as ONE task so one container", flush=True)
+        print("                holds the cache start to finish", flush=True)
+        print("Set DEFT_CACHE if your shared volume is somewhere else.", flush=True)
+        print("=" * 70, flush=True)
+        return fallback
+
+
+CACHE = _resolve_cache()
 
 
 def link_checkpoints(cache=None, repo_root=REPO_ROOT):
