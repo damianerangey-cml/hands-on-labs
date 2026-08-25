@@ -166,7 +166,22 @@ def launch(stage, queue=None, env=None, dry_run=False):
         q = deft.pick_queue(default_queue)
 
     docker_args = ["-e CLEARML_AGENT_SKIP_PYTHON_ENV_INSTALL=1",
-                   "-e HF_HUB_DISABLE_XET=1"]
+                   "-e HF_HUB_DISABLE_XET=1",
+                   # PUT THE AGENT'S CACHES SOMEWHERE THE TASK USER CAN WRITE.
+                   #
+                   # NVIDIA's image runs as `anomalygen` (uid 10000), but the
+                   # agent resolves its caches under HOME, which the container
+                   # sets to /root. On a cluster whose pod template does not
+                   # fix that up, the very first stage dies before it runs:
+                   #
+                   #   PermissionError: /root/.clearml/vcs-cache
+                   #
+                   # ...which reads as an infrastructure problem and is really
+                   # a one-line default. Pointing both caches at /tmp makes the
+                   # stage portable to any deployment instead of only to one
+                   # whose pods happen to run as root.
+                   "-e CLEARML_AGENT__AGENT__VCS_CACHE__PATH=/tmp/vcs-cache",
+                   "-e CLEARML_AGENT__AGENT__PIP_DOWNLOAD_CACHE__PATH=/tmp/pip-cache"]
     for k, v in sorted((env or {}).items()):
         docker_args.append("-e %s=%s" % (k, v))
 
