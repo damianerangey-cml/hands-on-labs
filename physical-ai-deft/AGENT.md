@@ -345,7 +345,7 @@ connect, report the server name, the URL it points at and the error, and stop.
 Do not repoint or re-add it yourself, and do not fall back to driving the
 platform from Python: a person decides that.
 
-**Use your ClearML MCP tools for everything they cover.** They are the native
+**Use your platform MCP tools for everything they cover.** (The app may name the server `clearml` or `klique`; it is the same platform.) They are the native
 way to drive this platform, and the actions land on the platform's own record
 rather than in your shell scrollback:
 
