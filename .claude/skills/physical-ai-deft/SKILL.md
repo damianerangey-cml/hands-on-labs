@@ -11,12 +11,10 @@ about how far you got.
 
 ## Read these before acting
 
-The repository is `physical-ai-deft/`. In a lab session it is usually already
-cloned at `~/environment/task_repository/hands-on-labs.git` — the app's Git
-field does that before you start; work from it in place. Only fetch it yourself
-if it is genuinely absent, and note the session container may ship **no git
-binary**: that is not a problem to fix — curl the GitHub tarball
-(`archive/refs/heads/main.tar.gz`) instead of installing anything.
+The repository is `physical-ai-deft/`. If it is not already in your workspace,
+clone `https://github.com/damianerangey-cml/hands-on-labs.git` (public, no
+credentials). If the container has no git binary, that is not a problem to
+fix: curl the GitHub tarball (`archive/refs/heads/main.tar.gz`) instead.
 
 - **`physical-ai-deft/AGENT.md`** — the operations contract. Read it in full.
 - **`physical-ai-deft/SKILL.md`** — the traps, eleven of them, each one a real
@@ -29,20 +27,24 @@ state over the API, enqueue work onto queues. `deft.gap()`, `deft.history()`,
 `deft.queues()` run locally. Everything else is `launch.py <stage>`.
 
 **2. Find the interpreter that owns the packages.** Containers ship more than
-one Python and `PATH` is often on the wrong one. On the ClearML app image it is
-`/usr/local/bin/python3`, not `python3`. **Never repair or delete a system
-Python** — an agent that ran `rm -rf /usr/local/lib/python3.11` deleted the only
+one Python and `PATH` is often on the wrong one. Look for the one that already
+imports `clearml`; if none does, `pip install --user -r requirements.txt` with
+one that has pip, then verify the import. **Never repair or delete a system
+Python**: an agent that ran `rm -rf /usr/local/lib/python3.11` deleted the only
 copy of `clearml` and destroyed its own session.
 
 ```bash
-for p in /usr/local/bin/python3 /usr/bin/python3; do
-  echo "$p -> $($p -c 'import clearml; print(clearml.__version__)' 2>&1 | tail -1)"
+for p in $(which -a python3 python 2>/dev/null) /usr/local/bin/python3 /usr/bin/python3; do
+  [ -x "$p" ] && echo "$p -> $($p -c 'import clearml; print(clearml.__version__)' 2>&1 | tail -1)"
 done
 ```
 
 **3. Do not guess queue names.** `deft.pick_queue("gpu")` resolves or refuses.
 A queue nobody serves accepts your task and holds it forever — identical, from
-outside, to a slow start. Ask; record the answer in `DEFT_QUEUE_GPU` etc.
+outside, to a slow start. Ask about three roles (`gpu`, `cpu`, and the optional
+`gpu_large` for the fine-tune, which may be the same queue as `gpu`) and record
+the answers with `deft.set_queues(...)`. Ask, too, whether task pods share a
+storage path (`DEFT_CACHE`).
 
 **4. Say what you verified.** VERIFIED = you called it and saw the response.
 Reading this repository's source is not evidence about the server. If you cannot
@@ -58,11 +60,13 @@ round; inflating them is deceiving yourself.
 ```bash
 python launch.py register                     # once — the real data
 python launch.py train --baseline             # the control, BEFORE generating
+# each stage runs as a task: clone its seed task via MCP (create the seed once
+# with `launch.py <stage> --dry-run`), or launch it directly as below.
 # then per round, deciding from what the last step reported:
 python launch.py generate --gap bridge:52,excess_solder:44 --run-id r1
-python launch.py evaluate --run-dir /cache/results/pcb-uc1/runs/r1
-python launch.py improve  --run-dir /cache/results/pcb-uc1/runs/r1 --search-rounds 1
-python launch.py publish  --run-dir /cache/results/pcb-uc1/runs/r1/searched --run-id r1
+python launch.py evaluate --run-dir $DEFT_CACHE/results/pcb-uc1/runs/r1
+python launch.py improve  --run-dir $DEFT_CACHE/results/pcb-uc1/runs/r1 --search-rounds 1
+python launch.py publish  --run-dir $DEFT_CACHE/results/pcb-uc1/runs/r1/searched --run-id r1
 python launch.py train    --name inspector-round1
 ```
 

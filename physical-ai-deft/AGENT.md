@@ -77,7 +77,7 @@ Three roles to fill, and you may need one answer per role:
 |---|---|---|
 | `gpu` | a whole GPU, 24 GB is enough — generation, scoring, training | no |
 | `cpu` | no GPU — registration and coordination | no |
-| `gpu48` | **48 GB or more** — only the phase-1 fine-tune | **yes** |
+| `gpu_large` | **more than 24 GB** — only the phase-1 fine-tune. It peaked about 4.5 GiB over a 24 GB card; 40, 48 and 80 GB cards all fit. On a cluster whose `gpu` queue already has cards that size, it is the same queue. | **yes** |
 
 **A queue existing is not evidence anything runs it.** Measured on a live
 server: 255 queues, of which exactly **two** had compute behind them — one CPU
@@ -128,12 +128,13 @@ cannot determine, and stop. `pick_queue`'s own error message is written this way
 Once you have the answers, **write them down**:
 
 ```python
-deft.set_queues(gpu="...", cpu="...", gpu48="...")
-deft.set_queues(gpu48=False)     # "there is no 48 GB queue here" -- also an answer
+deft.set_queues(gpu="...", cpu="...", gpu_large="...")
+deft.set_queues(gpu_large="...")   # may name the same queue as gpu, if its cards are big enough
+deft.set_queues(gpu_large=False)   # "there is no large-GPU queue here" -- also an answer
 ```
 
 `False` is not the same as leaving it out. It records *asked and answered:
-none*, and `pick_queue("gpu48")` then raises `deft.NoSuchQueue` — catch that
+none*, and `pick_queue("gpu_large")` then raises `deft.NoSuchQueue` — catch that
 and skip the fine-tune. Leaving it out records nothing, so you will ask again
 next time, and an agent that keeps asking eventually guesses.
 
@@ -148,8 +149,28 @@ what makes asking a one-time cost. (`DEFT_QUEUE_GPU` and friends still work, and
 take precedence — they are for a deployment that wants to inject the answer, or
 for a one-off override.)
 
-If there is no 48 GB queue at all, say so and skip the fine-tune — the rest of
-the pipeline runs on 24 GB and this lab has been demonstrating exactly that.
+If there is no GPU larger than 24 GB at all, say so and skip the fine-tune —
+the rest of the pipeline runs on 24 GB, using NVIDIA's published adapter.
+(`gpu48` is the old name for `gpu_large`; it is still accepted.)
+
+### Two more things only the person can tell you
+
+**Shared storage for the stages.** Stages hand files to each other through a
+path every task can see (`DEFT_CACHE`, default `/cache`): a PVC mounted on
+every task pod on Kubernetes, a bind-mounted host path on VM workers. Ask
+whether one exists and where. Without one, each stage falls back to its own
+scratch space and says so in its log: fine for a single-task run
+(`launch.py rounds`), but a later stage cannot see an earlier stage's output,
+and it fails with *no SDG_result.csv*, which reads as if generation never ran.
+
+**Credentials for NVIDIA's container and weights.** The stages need `NGC_KEY`
+(some of NVIDIA's tooling reads `NGC_API_KEY`: set both) and `HF_TOKEN` in the
+**task's** environment, and the workers need pull access to `nvcr.io`. They
+come from the platform, never from you: the user's Configuration Vault
+(an `environment { ... }` block) where the agents apply vaults, or a Kubernetes
+secret projected into task pods. Never pass them as task parameters or
+docker arguments: those are readable by anyone with project access. The
+parity probe (below) reports whether they arrived, without printing them.
 
 ### Everything else that is a local convention
 
@@ -165,7 +186,7 @@ All are environment variables, so you can fix one without editing code.
 | `DEFT_CACHE` | `/cache` | The shared path between stages. Without one, each stage re-downloads ~22 GB — slow, not wrong. |
 | `DEFT_PROJECT` | `Physical AI Inspection` | Where tasks and models land. |
 | `DEFT_HYPERDATASET` | `PCB Inspection` | Which dataset the gap is read from. |
-| `DEFT_DATASET` | `pcb-uc1` | NVIDIA's use-case id. **`ensure_dataset` calls `prepare_dataset_uc1.py`** — they ship `uc2` and `uc3` too, and this lab has only ever been run against `uc1`. Another use case needs that call generalised, not just this variable changed. |
+| `DEFT_DATASET` | `pcb-uc1` | NVIDIA's use-case id. **`ensure_dataset` calls `prepare_dataset_uc1.py`** — they ship `uc2` and `uc3` too, and this repository has only ever been run against `uc1`. Another use case needs that call generalised, not just this variable changed. |
 
 Two things are **not** parameterised and you should know why:
 
@@ -181,30 +202,35 @@ Two things are **not** parameterised and you should know why:
 
 ## Find the interpreter that owns the packages — do not repair anything
 
-A container can have more than one Python, and the one on `PATH` is not
-necessarily the one with your packages. Measured on the ClearML `claude_code`
-app image:
+This repository needs exactly one Python package where you are: the ClearML SDK
+(`requirements.txt`). Everything heavy runs inside NVIDIA's container on a
+worker. But a container can have more than one Python, and the one on `PATH`
+is not necessarily the one with your packages.
 
-| binary | what it is |
-|---|---|
-| `/usr/bin/python3` → 3.13 | bare. No pip, no `venv`, and it picks up 3.11's stdlib, so it dies with `assert _sre.MAGIC == MAGIC  # SRE module mismatch` |
-| `/usr/local/bin/python3` → 3.11 | **everything** — `clearml`, `numpy`, the app's own dependencies |
-
-The app launcher itself runs on `/usr/local/bin/python3`. So the fix is one
-line: **use that binary.** No venv, no install, nothing to repair.
+**First, find the interpreter that already imports `clearml`:**
 
 ```bash
-/usr/local/bin/python3 -c "import clearml; print(clearml.__version__)"
-```
-
-**Before concluding anything is broken, find the working interpreter:**
-
-```bash
-ls /usr/local/bin/python* /usr/bin/python*
-for p in /usr/local/bin/python3 /usr/bin/python3; do
-  echo "$p: $($p -c 'import clearml,sys; print(sys.version.split()[0], clearml.__version__)' 2>&1 | tail -1)"
+for p in $(which -a python3 python 2>/dev/null) /usr/local/bin/python3 /usr/bin/python3; do
+  [ -x "$p" ] && echo "$p: $($p -c 'import clearml,sys; print(sys.version.split()[0], clearml.__version__)' 2>&1 | tail -1)"
 done
 ```
+
+Use that binary for every Python call. On one Claude Code app image it was
+`/usr/local/bin/python3` (3.11, with everything), while the `python3` on `PATH`
+was a bare 3.13 that died with `SRE module mismatch`. Your image may differ,
+which is why you look rather than assume.
+
+**If none imports `clearml`**, install the one requirement for your user only,
+with an interpreter that has pip, and then *verify the import* (not the install
+message):
+
+```bash
+<python> -m pip install --user -r requirements.txt
+<python> -c "import clearml; print(clearml.__version__)"
+```
+
+The platform's Claude Code app sets the `CLEARML_*` connection variables for
+you; `clearml` reads them, so no `clearml.conf` is needed.
 
 ### Two ways this has already gone wrong
 
@@ -250,6 +276,15 @@ If you cannot run code at all, that is the **headline**, not a footnote. A
 report full of ticks from an agent that executed nothing is worse than no
 report, because someone will act on it.
 
+Before the first real stage, run the parity probe once. It launches a
+throwaway task on the `gpu` role and reports what a task actually gets: a GPU,
+`/dev/shm`, the shared path, the user id, and whether the NGC and Hugging Face
+credentials arrived (values never printed):
+
+```bash
+<python> probe_parity.py
+```
+
 Minimum to actually verify, once Python works:
 
 ```python
@@ -288,10 +323,11 @@ output from where you are standing. The in-process functions in `deft.py` exist
 for code already running *inside* a task, which is how `run_rounds.py` uses
 them.
 
-One consequence worth knowing: **publish runs on the GPU queue even though it
-needs no GPU.** The CPU queue's pods deliberately drop this recipe's overrides,
-so they have no cache mount. A stage that touches `/cache` has to go where the
-volume is.
+One consequence worth knowing: **a stage that touches the shared cache has to
+run where the cache is mounted**, even if it needs no GPU. That is why
+`launch.py` sends publish to the `gpu` role by default: on many clusters only
+the GPU workers mount the shared volume. If your CPU workers mount it too,
+`--queue` moves it.
 
 ---
 
@@ -302,6 +338,12 @@ drive the platform and you enqueue work. Every stage that touches a GPU or the
 shared cache runs as a task on a queue. That is the design, not a limitation to
 work around — it is also why an agent driving this loop cannot exceed the
 permissions of whoever launched it.
+
+**Your MCP tools come with the session.** The platform's Claude Code app
+configures its MCP server for you (`claude mcp list` shows it). If it fails to
+connect, report the server name, the URL it points at and the error, and stop.
+Do not repoint or re-add it yourself, and do not fall back to driving the
+platform from Python: a person decides that.
 
 **Use your ClearML MCP tools for everything they cover.** They are the native
 way to drive this platform, and the actions land on the platform's own record
@@ -316,11 +358,11 @@ rather than in your shell scrollback:
 | Which models exist and what made them | MCP — list models |
 | Bring up a serving endpoint | MCP — launch app instance |
 
-Do not shell out to Python for any of the above. Older versions of this lab
+Do not shell out to Python for any of the above. Older versions of this repository
 wrapped all of it in `launch.py` and `deft.py` helpers; where an MCP tool
 exists it is the better path and the helper is legacy.
 
-### Clone the seed task — do not build one from scratch
+### Seed tasks: create each once, then clone
 
 Three settings decide whether a stage runs at all, and each fails in a way that
 reads like a model bug rather than a config mistake: the agent must skip
@@ -328,17 +370,25 @@ building a virtualenv (NVIDIA's image already carries torch and every
 dependency), the Xet transport must be disabled, and `clearml` has to be
 pip-installed in the setup script *because* the venv step is skipped.
 
-A seed task per stage already carries all three, plus the container image and
-the right queue. So the launch pattern is always:
+A **seed task** per stage carries all three, plus the container image, this
+repository and its commit. A fresh environment has none, so the first time you
+need a stage, create its seed as a draft, which launches nothing and spends no
+GPU:
 
-1. find the seed task (MCP, list tasks in this project)
+```bash
+<python> launch.py <stage> --dry-run     # register, generate, evaluate, improve, publish, train, finetune
+```
+
+From then on the launch pattern is always:
+
+1. find the stage's seed task (MCP, list tasks in this project)
 2. **clone** it
-3. change only what this round needs — the entry point for a different stage,
-   or an env value like the run id
+3. change only what this round needs: an env value like the run id, the gap
 4. enqueue the clone onto the queue for that role
 
-A task built from nothing is missing those three settings, and you will spend
-an hour discovering why a stage that "should work" does not.
+Never build a stage task by hand through MCP: it will be missing those three
+settings, and you will spend an hour discovering why a stage that "should
+work" does not. If an environment already provides seed tasks, use them.
 
 ### The two things that are still Python
 

@@ -88,16 +88,16 @@ STAGES = {
                  "data_processing", "gpu"),
     "evaluate": ("anomalygen_evaluate.py", "PHASE 4 - The gate: score every frame vs real",
                  "data_processing", "gpu"),
-    # The 48 GB lane. NVIDIA's phase 1 wants 4.54 GiB more than a 24 GB card
-    # has (measured twice), so it goes to the `gpu48` role rather than `gpu`.
-    # If your 48 GB queue scales from zero, expect a cold start of several
-    # minutes before this task starts -- the card is created when the task asks
-    # for it. If you have no such queue at all, record that with
-    # `deft.set_queues(gpu48=False)` and skip this stage; the other six phases
-    # run on 24 GB.
+    # The large-GPU lane. NVIDIA's phase 1 wants 4.54 GiB more than a 24 GB
+    # card has (measured twice), so it goes to the `gpu_large` role rather than
+    # `gpu`. On a cluster whose gpu queue already has 40-80 GB cards, both roles
+    # can name the same queue. If the large queue scales from zero, expect a
+    # cold start of several minutes before this task starts. If there is no
+    # such queue at all, record that with `deft.set_queues(gpu_large=False)`
+    # and skip this stage; the other six phases run on 24 GB.
     "finetune": ("anomalygen_finetune.py",
-                 "PHASE 1 - Fine-tune the GENERATOR, few-shot (48GB card)",
-                 "training", "gpu48"),
+                 "PHASE 1 - Fine-tune the GENERATOR, few-shot (large-memory GPU)",
+                 "training", "gpu_large"),
     "improve": ("anomalygen_improve.py",
                 "PHASES 5-7 - Search params, keep best, regenerate rejects",
                 "data_processing", "gpu"),
@@ -154,7 +154,7 @@ def launch(stage, queue=None, env=None, dry_run=False):
     # exception alone, and was wrong, because the exception says nothing about
     # what happened on the line before it.
     #
-    # `default_queue` is a KIND ("gpu"/"cpu"/"gpu48"), not a name. THERE ARE NO
+    # `default_queue` is a KIND ("gpu"/"cpu"/"gpu_large"), not a name. THERE ARE NO
     # QUEUE NAMES IN THIS REPOSITORY -- see deft.py. pick_queue() reads what has
     # been recorded for this server and raises a question rather than
     # enqueueing into a queue nobody serves, which would otherwise sit in

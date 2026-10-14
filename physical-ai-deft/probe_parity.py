@@ -18,17 +18,18 @@ The probe checks all four, plus the two credentials the real images need:
     uid/gid    AnomalyGen runs as uid 10000 and writes into mounted dirs
     NGC/HF     the secrets are present in the pod env (values never printed)
 
-Usage (credentials come from the lab's provision result):
+Usage (in the platform's Claude Code app the CLEARML_* variables are already set):
 
     export CLEARML_API_HOST=https://api.your-clearml.example
     export CLEARML_WEB_HOST=https://app.your-clearml.example
     export CLEARML_FILES_HOST=https://files.your-clearml.example
     export CLEARML_API_ACCESS_KEY=...
     export CLEARML_API_SECRET_KEY=...
-    python probe_parity.py --queue <your GPU queue>
+    python probe_parity.py                 # uses the gpu role from deft.set_queues
+    python probe_parity.py --queue <name>  # or name a queue explicitly
 
-A FAIL here is not a bug in the probe -- it is the pod-template item the lab
-recipe still has to set. That is the point.
+A FAIL here is not a bug in the probe -- it is the pod-template or secret
+item your environment still has to provide. That is the point.
 
 ASCII-only.
 """
@@ -75,11 +76,19 @@ EXPECTATIONS = [
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--queue", default="0.25XGPU", help="GPU queue to probe")
+    ap.add_argument("--queue", default=None,
+                    help="GPU queue to probe (default: the gpu role recorded "
+                         "with deft.set_queues -- there is no built-in name)")
     ap.add_argument("--workspace", default=WORKSPACE, help="expected workspace mount path")
     ap.add_argument("--image", default=PROBE_IMAGE)
     ap.add_argument("--timeout", type=int, default=900)
     args = ap.parse_args()
+    if not args.queue:
+        # No default name: a queue that exists on one server and not on the
+        # next is accepted silently and then never runs. Ask deft, which
+        # raises with the server's real list and the question to put to a person.
+        import deft
+        args.queue = deft.pick_queue("gpu")
 
     print("probing queue=%s image=%s workspace=%s" % (args.queue, args.image, args.workspace))
     task = run_stage(

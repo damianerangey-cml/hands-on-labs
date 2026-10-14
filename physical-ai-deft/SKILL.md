@@ -5,7 +5,7 @@ description: Run NVIDIA's Physical AI Data Factory (Cosmos AnomalyGen) as a boun
 
 # Run the Physical AI Data Factory on a ClearML server
 
-You are setting this lab up on a ClearML Enterprise server that is **not** the
+You are setting this up on a ClearML Enterprise server that is **not** the
 one it was built on. Everything you need is in this folder; nothing is specific
 to the original host except the values in "What you must be told" below.
 

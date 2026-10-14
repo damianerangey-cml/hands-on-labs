@@ -18,6 +18,23 @@ Same image, same command, same workspace paths — but on a queue, with console,
 metrics, artifacts and lineage recorded, and with the agent holding no GPU and no
 docker daemon of its own.
 
+## Run it on your own environment
+
+Nothing here is specific to one server. You need:
+
+| What | Notes |
+|---|---|
+| A Klique (ClearML Enterprise) environment with **HyperDatasets** | The loop reads its state from dataset label counts. |
+| The platform's **Claude Code** app | It wires the platform's MCP server into the session. The agent is started from `PROMPT.md`. |
+| A **whole GPU of 24 GB or more** behind a queue | Generation, scoring, training. A fractional GPU will run out of memory. |
+| Optionally, a GPU **larger than 24 GB** | Only the few-shot fine-tune. Without one it is skipped and NVIDIA's published adapter is used. |
+| Optionally, **shared storage** on task pods | Lets stages hand files to each other. Without it, run the loop as one task (`launch.py rounds`). |
+| `NGC_KEY`, `NGC_API_KEY` and `HF_TOKEN` in the task environment, and pull access to `nvcr.io` | From the Configuration Vault or a Kubernetes secret; see Credentials. `probe_parity.py` checks them. |
+
+The agent asks for anything it cannot discover (which queue serves which role,
+where the shared path is) and records the answers. No queue name, host or image
+layout is built in.
+
 ## The files
 
 | File | What it does |
@@ -66,16 +83,28 @@ two records can't drift.
 
 ## Credentials
 
-`NGC_KEY` and `HF_TOKEN` are **never** passed as task parameters — task
-parameters are readable by anyone with project access. They should reach the
-task pod from wherever your platform keeps secrets -- a Kubernetes Secret
-projected by the agent's pod template, a vault sidecar, whatever you already
-use. `probe_parity.py` checks they are present without printing them.
+`NGC_KEY` (set `NGC_API_KEY` to the same value; NVIDIA's tools read both) and
+`HF_TOKEN` are **never** passed as task parameters: task parameters are
+readable by anyone with project access. They should reach the task from
+wherever your platform keeps secrets. On Klique that is usually the user's
+Configuration Vault:
+
+```
+environment {
+  NGC_KEY: "nvapi-..."
+  NGC_API_KEY: "nvapi-..."
+  HF_TOKEN: "hf_..."
+}
+```
+
+or a Kubernetes secret projected into task pods. The workers also need pull
+access to `nvcr.io` (an image pull secret). `probe_parity.py` checks they are present without printing them.
 
 ---
 
-In the hands-on lab these scripts arrive **pre-seeded** as ClearML tasks that
-reference this folder by commit — but there's nothing hidden and nothing
-lab-specific: it's ordinary Python against the ClearML SDK, and it runs on any
-ClearML server you point it at. `AGENT.md` is the operations contract, and it
+A hosted hands-on lab may arrive with these scripts **pre-seeded** as tasks
+that reference this folder by commit. On your own environment the agent creates
+those seed tasks itself the first time (`launch.py <stage> --dry-run`). There is
+nothing hidden and nothing environment-specific: it is ordinary Python against
+the ClearML SDK, and it runs on any server you point it at. `AGENT.md` is the operations contract, and it
 assumes nothing about your queues, your hardware, or your naming.

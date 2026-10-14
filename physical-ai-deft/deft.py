@@ -83,7 +83,7 @@ def _ds_ro():
 #
 # So the answer comes from the operator, once, and is then RECORDED:
 #
-#     env DEFT_QUEUE_{GPU,CPU,GPU48}   ->  set_queues() config file  ->  ask
+#     env DEFT_QUEUE_{GPU,CPU,GPU_LARGE}  ->  set_queues() config file  ->  ask
 #
 # The config file matters more than it looks. An agent's `export FOO=bar` dies
 # with the shell that ran it, so an agent told to "set an env var" re-asks on
@@ -92,12 +92,21 @@ def _ds_ro():
 _QUEUE_ENV = {
     "gpu":   "DEFT_QUEUE_GPU",
     "cpu":   "DEFT_QUEUE_CPU",
-    "gpu48": "DEFT_QUEUE_GPU48",
+    "gpu_large": "DEFT_QUEUE_GPU_LARGE",
 }
+# `gpu48` was this role's first name, after the 48 GB queue on the server it
+# was built on. The need is "more memory than a 24 GB card", which on an 80 GB
+# cluster is simply the gpu queue -- so the role is named for the requirement,
+# and the old spelling is still read so a recorded answer is never lost.
+_ROLE_ALIAS = {"gpu48": "gpu_large"}
+_LEGACY_ENV = {"gpu_large": "DEFT_QUEUE_GPU48"}
 _QUEUE_WANT = {
     "gpu":   "a whole GPU (24 GB is enough) -- generation, scoring, training",
     "cpu":   "no GPU -- coordination work only",
-    "gpu48": "a GPU with at least 48 GB, for the few-shot fine-tune (optional)",
+    "gpu_large": ("a GPU with more than 24 GB (the fine-tune peaked about 4.5 GiB "
+                  "over a 24 GB card; 40, 48 and 80 GB cards all fit) -- only the "
+                  "few-shot fine-tune needs it. It can be the same queue as gpu "
+                  "if those cards are big enough (optional)"),
 }
 CONF = os.path.expanduser(os.environ.get("DEFT_CONF", "~/.deft/config.json"))
 
@@ -121,7 +130,7 @@ def config():
         return {}
 
 
-def set_queues(gpu=None, cpu=None, gpu48=None):
+def set_queues(gpu=None, cpu=None, gpu_large=None, gpu48=None):
     """Record which queue serves which role on THIS server. Ask once, keep it.
 
     Every name is checked against the server before it is written -- recording
@@ -130,22 +139,27 @@ def set_queues(gpu=None, cpu=None, gpu48=None):
 
     Three ways to answer a role, and the middle one is the point:
 
-        gpu48="1xGPU-48GB"   there is one, and this is it
-        gpu48=False          THERE IS NONE HERE -- recorded, so nobody re-asks
-        gpu48=None           no answer yet (leaves any previous answer alone)
+        gpu_large="a100-80g"  there is one, and this is it
+        gpu_large=gpu         the gpu queue's cards are already big enough
+        gpu_large=False       THERE IS NONE HERE -- recorded, so nobody re-asks
+        gpu_large=None        no answer yet (leaves any previous answer alone)
+
+    `gpu48=` is accepted as the old name for `gpu_large=`.
 
     `False` matters because "we don't have that" is a real answer and used to be
-    unrecordable: the agent would be told there was no 48 GB queue, store
+    unrecordable: the agent would be told there was no large-GPU queue, store
     nothing, and ask again on the next call. An answer you cannot write down is
     a question you ask forever, and an agent that keeps asking eventually
-    guesses. Only `gpu48` is genuinely optional -- without it the fine-tune is
+    guesses. Only `gpu_large` is genuinely optional -- without it the fine-tune is
     skipped and the other six phases run on a 24 GB card, which is what this
-    lab has been demonstrating.
+    repository has been demonstrating.
     """
     import difflib
     import json
     have = {q["name"] for q in queues()}
-    want = {"gpu": gpu, "cpu": cpu, "gpu48": gpu48}
+    if gpu_large is None and gpu48 is not None:
+        gpu_large = gpu48
+    want = {"gpu": gpu, "cpu": cpu, "gpu_large": gpu_large}
     bad = {k: v for k, v in want.items() if v and v not in have}
     if bad:
         # A near-miss beats an inventory. Measured on a server with 255 queues:
@@ -242,7 +256,7 @@ def queues(activity=True):
 
 
 def pick_queue(kind="gpu"):
-    """Resolve the queue for `kind` ("gpu" | "cpu" | "gpu48"), or refuse.
+    """Resolve the queue for `kind` ("gpu" | "cpu" | "gpu_large"), or refuse.
 
     Order: the DEFT_QUEUE_* env var, then whatever `set_queues()` recorded.
     There is no third source -- no name is built in, and nothing is inferred
@@ -252,10 +266,15 @@ def pick_queue(kind="gpu"):
     apart. The operator knows their cluster; ten seconds of asking beats a task
     that sits in `queued` forever looking like a slow start.
     """
-    env = os.environ.get(_QUEUE_ENV[kind])
+    kind = _ROLE_ALIAS.get(kind, kind)
+    env = (os.environ.get(_QUEUE_ENV[kind])
+           or os.environ.get(_LEGACY_ENV.get(kind, ""), ""))
     if env:
         return env
-    known = config().get("queues", {})
+    known = dict(config().get("queues", {}))
+    for old, new in _ROLE_ALIAS.items():
+        if old in known and new not in known:
+            known[new] = known[old]
     if known.get(kind):
         return known[kind]
     if kind in known:
@@ -267,7 +286,7 @@ def pick_queue(kind="gpu"):
             "%s"
             % (kind, _QUEUE_WANT[kind],
                "Skip the fine-tune; the other phases run on the gpu queue."
-               if kind == "gpu48" else
+               if kind == "gpu_large" else
                "Nothing can run until somebody records one."))
     # This message is the QUESTION an agent will put to a person, so it is
     # written as one. It leads with what is actually known (which queues have
