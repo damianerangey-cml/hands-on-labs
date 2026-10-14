@@ -352,7 +352,7 @@ rather than in your shell scrollback:
 | What you need | How |
 |---|---|
 | What queues exist, and which workers serve them | MCP — list queues / list workers |
-| Launch a stage | MCP — **clone** the stage's seed task, update what the round needs, enqueue |
+| Launch a stage | `launch.py <stage> --dry-run` with this run's arguments, then MCP — enqueue the draft |
 | Watch a running stage | MCP — read task logs, read task metrics |
 | What ran, what it scored | MCP — list tasks, get task metrics, compare runs |
 | Which models exist and what made them | MCP — list models |
@@ -362,7 +362,7 @@ Do not shell out to Python for any of the above. Older versions of this reposito
 wrapped all of it in `launch.py` and `deft.py` helpers; where an MCP tool
 exists it is the better path and the helper is legacy.
 
-### Seed tasks: create each once, then clone
+### A draft per run, enqueued through the MCP
 
 Three settings decide whether a stage runs at all, and each fails in a way that
 reads like a model bug rather than a config mistake: the agent must skip
@@ -370,25 +370,37 @@ building a virtualenv (NVIDIA's image already carries torch and every
 dependency), the Xet transport must be disabled, and `clearml` has to be
 pip-installed in the setup script *because* the venv step is skipped.
 
-A **seed task** per stage carries all three, plus the container image, this
-repository and its commit. A fresh environment has none, so the first time you
-need a stage, create its seed as a draft, which launches nothing and spends no
-GPU:
+`launch.py <stage> --dry-run` creates a **draft** task that carries all three,
+plus the container image, this repository and its commit, **and this run's own
+settings**: `--run-id`, `--gap`, `--num-sdg`, `--baseline`, `--name`. Those ride
+in the task's container environment. It launches nothing and spends no GPU, and
+it prints the draft's task id.
 
-```bash
-<python> launch.py <stage> --dry-run     # register, generate, evaluate, improve, publish, train, finetune
-```
+**Why not clone a seed task and edit it?** Because the MCP's `clone_task` and
+`update_task` change a task's name, comment, tags and project, not its
+container environment. A clone of one seed always runs with that seed's run id,
+and from the second round `publish` sees the id as already published and adds
+nothing, with no error. (Found by an agent on its first blank-environment run.)
 
-From then on the launch pattern is always:
+So for every stage you run:
 
-1. find the stage's seed task (MCP, list tasks in this project)
-2. **clone** it
-3. change only what this round needs: an env value like the run id, the gap
-4. enqueue the clone onto the queue for that role
+1. create its draft with this run's arguments, for example
+   ```bash
+   <python> launch.py train --baseline --dry-run
+   <python> launch.py generate --gap bridge:52,excess_solder:44 --num-sdg 48 --run-id r1-<session> --dry-run
+   ```
+2. **enqueue that draft with the MCP** (`enqueue_task`) on the queue for its
+   role, then watch it with the MCP (status, logs, metrics) until it finishes.
 
-Never build a stage task by hand through MCP: it will be missing those three
-settings, and you will spend an hour discovering why a stage that "should
-work" does not. If an environment already provides seed tasks, use them.
+The MCP stays the path for launching and watching; `launch.py` only writes the
+task. Never build a stage task by hand through the MCP: it will be missing
+those three settings. If an environment provides ready-made drafts, enqueue
+those the same way.
+
+**Size the batch from the gap.** `--num-sdg` defaults to 24. Rounds times
+batch has to cover the gap plus what the gate rejects, so with a 96-image gap
+and a three-round budget each round needs well over 32. Say so if the budget
+cannot reach the target, rather than discovering it in round three.
 
 ### The two things that are still Python
 

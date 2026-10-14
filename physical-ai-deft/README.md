@@ -104,7 +104,8 @@ access to `nvcr.io` (an image pull secret). `probe_parity.py` checks they are pr
 
 A hosted hands-on lab may arrive with these scripts **pre-seeded** as tasks
 that reference this folder by commit. On your own environment the agent creates
-those seed tasks itself the first time (`launch.py <stage> --dry-run`). There is
+a draft per run itself (`launch.py <stage> --dry-run` with that run's
+settings) and enqueues it through the MCP. There is
 nothing hidden and nothing environment-specific: it is ordinary Python against
 the ClearML SDK, and it runs on any server you point it at. `AGENT.md` is the operations contract, and it
 assumes nothing about your queues, your hardware, or your naming.

@@ -60,8 +60,9 @@ round; inflating them is deceiving yourself.
 ```bash
 python launch.py register                     # once — the real data
 python launch.py train --baseline             # the control, BEFORE generating
-# each stage runs as a task: clone its seed task via MCP (create the seed once
-# with `launch.py <stage> --dry-run`), or launch it directly as below.
+# each stage runs as a task: add --dry-run to create a draft with this run's
+# settings, then enqueue the draft through the MCP. Do not clone a draft to
+# reuse it: the MCP cannot change a clone's run id or gap.
 # then per round, deciding from what the last step reported:
 python launch.py generate --gap bridge:52,excess_solder:44 --run-id r1
 python launch.py evaluate --run-dir $DEFT_CACHE/results/pcb-uc1/runs/r1

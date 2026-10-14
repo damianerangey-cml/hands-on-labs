@@ -32,7 +32,7 @@ paste 1 is there because of something that actually went wrong:
 | drive through MCP | Shelling out to Python for work the platform exposes as tools hides the agent's actions from the platform's own record, and is slower to write and read. |
 | report a broken MCP, do not fix it | The tools come with the app. An agent that rewires them, or quietly falls back to scripts, is running a different system from the one you approved. |
 | find the interpreter, never repair one | An image can ship two Pythons with the bare one on `PATH`. One agent ran `rm -rf /usr/local/lib/python3.11`, deleting the only `clearml`; the damage stayed invisible until the shell died. |
-| create seed tasks once, then clone | Three settings decide whether a stage runs at all (skip the venv build, disable the Xet transport, pip-install clearml in setup). A task built by hand misses them and fails like a model bug. |
+| a draft per run, enqueued through MCP | Three settings decide whether a stage runs at all (skip the venv build, disable the Xet transport, pip-install clearml in setup), and each run needs its own run id and gap. `launch.py --dry-run` writes all of that into a draft; the MCP cannot edit a cloned task's container settings, so a cloned seed reruns the same run id and publish silently adds nothing. |
 | label VERIFIED / INFERRED | One agent reported three green ticks, including "HyperDatasets: Enterprise-grade", while unable to run a line of code. Its evidence was that a repository's own source calls those endpoints. |
 | ask about queues, do not rank them | A queue nobody serves accepts the task and holds it forever, indistinguishable from a slow start. On one server two of 255 queues were live and neither was named after what it did. |
 | stop before launching | So you can check all of the above before it spends a GPU. |
@@ -56,15 +56,16 @@ report its name, its URL and the error, and STOP. Do not repoint it and do not
 fall back to Python for what it would have done.
 
 PYTHON, FOR THE TWO THINGS THE MCP DOES NOT COVER: the HyperDataset read
-(deft.gap()) and creating seed tasks (launch.py --dry-run). Find the
+(deft.gap()) and creating run drafts (launch.py --dry-run). Find the
 interpreter that already imports clearml, as AGENT.md shows. If none does,
 install requirements.txt for your user only. Never delete or repair anything
 under a system path.
 
-LAUNCHING A STAGE: find its seed task with the MCP, CLONE it, change only what
-the round needs, enqueue the clone. If a stage has no seed task yet, create it
-once as a draft with `launch.py <stage> --dry-run`. Never build a stage task
-by hand.
+LAUNCHING A STAGE: create a draft for that run with
+`launch.py <stage> --dry-run` and the run's own arguments (--run-id, --gap,
+--num-sdg, --baseline), then enqueue the draft with the MCP and watch it
+there. Never build a stage task by hand, and do not clone a draft to reuse it:
+the MCP cannot change a clone's run settings.
 
 REPORT BACK -- label every claim VERIFIED, INFERRED or UNKNOWN. VERIFIED
 means you called it and saw the response; reading a repository's source is
@@ -74,7 +75,7 @@ not evidence about this server.
    b. The queues on this server, from the MCP -- the real list.
    c. deft.gap() -- proves the HyperDataset layer answers and shows what is
       missing. If it fails, show me the error rather than interpreting it.
-   d. The seed tasks in this project, if any, from the MCP.
+   d. The tasks already in this project, if any, from the MCP.
    e. Which queue serves each role: gpu (a whole GPU, 24 GB is enough),
       cpu (no GPU), gpu_large (more than 24 GB, only the fine-tune needs it;
       it may be the same queue as gpu, or "none").
