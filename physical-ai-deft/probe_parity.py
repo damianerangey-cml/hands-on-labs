@@ -79,7 +79,11 @@ def main():
     ap.add_argument("--queue", default=None,
                     help="GPU queue to probe (default: the gpu role recorded "
                          "with deft.set_queues -- there is no built-in name)")
-    ap.add_argument("--workspace", default=WORKSPACE, help="expected workspace mount path")
+    ap.add_argument("--workspace",
+                    default=os.environ.get("DEFT_CACHE", "/cache"),
+                    help="the shared path the stages hand files through "
+                         "(DEFT_CACHE, default /cache -- what launch.py uses; "
+                         "%s is the older run_stage.py convention)" % WORKSPACE)
     ap.add_argument("--image", default=PROBE_IMAGE)
     ap.add_argument("--timeout", type=int, default=900)
     args = ap.parse_args()
