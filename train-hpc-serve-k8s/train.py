@@ -116,11 +116,15 @@ def main():
         task_type="CAUSAL_LM", target_modules="all-linear"))
 
     class KliqueScalars(TrainerCallback):
-        """Send every Trainer log line to the task's Scalars tab."""
+        """Send each value the Trainer logs to its own chart in the task's Scalars tab."""
+        SKIP = ("epoch", "total_flos")   # bookkeeping, not curves
+
         def on_log(self, a, state, control, logs=None, **kw):
             for key, val in (logs or {}).items():
-                if isinstance(val, (int, float)):
-                    logger.report_scalar("train", key, value=float(val), iteration=int(state.global_step))
+                if isinstance(val, (int, float)) and key not in self.SKIP and "runtime" not in key \
+                        and "per_second" not in key:
+                    logger.report_scalar(title=key, series="train", value=float(val),
+                                         iteration=int(state.global_step))
 
     trainer = Trainer(
         model=model,
