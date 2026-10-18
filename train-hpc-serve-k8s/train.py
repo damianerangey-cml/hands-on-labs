@@ -99,7 +99,7 @@ def main():
     if tok.pad_token is None:
         tok.pad_token = tok.eos_token
     dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float32
-    model = AutoModelForCausalLM.from_pretrained(args.base_model, torch_dtype=dtype)
+    model = AutoModelForCausalLM.from_pretrained(args.base_model, dtype=dtype)
 
     def encode(prompt, response):
         text = tok.apply_chat_template([{"role": "user", "content": prompt},

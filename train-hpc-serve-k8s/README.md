@@ -21,4 +21,5 @@ registered model; one pipeline trains on both and tags the better model.
 | Where it runs | `--queue` for one run, `--hpc` / `--k8s` / `--cpu` for the pipeline: your compute resource names |
 | Serving | vLLM Model Deployment app: a GPU compute resource on Kubernetes, the model ID from the registry, an endpoint name |
 | Hub access | Gated models need a Hugging Face token in the Klique Configuration Vault (`HF_TOKEN`) |
-| Package versions | `requirements.txt`: a torch build every cluster's GPU driver supports, and the serving image's transformers and tokenizers versions |
+| Container on Kubernetes | A Kubernetes compute resource runs the task in a container. Set the task's image (Execution › Container, or `--k8s_image` in the pipeline) to one with Python 3.9 or later, such as `pytorch/pytorch:2.7.1-cuda12.6-cudnn9-runtime` |
+| Package versions | `requirements.txt`: a torch build every cluster's GPU driver supports, the serving image's transformers and tokenizers versions, and a `datasets` release that accepts the same `huggingface_hub` |

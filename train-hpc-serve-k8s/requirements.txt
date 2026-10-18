@@ -8,6 +8,7 @@ transformers==4.57.5
 tokenizers==0.22.2
 peft
 accelerate
-datasets
+# ADAPT: datasets 5.1 and later need huggingface_hub 1.x, which transformers 4.57 does not allow.
+datasets==5.0.1
 # call_endpoint.py only
 openai
