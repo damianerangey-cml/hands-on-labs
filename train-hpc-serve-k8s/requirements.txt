@@ -1,0 +1,13 @@
+# Training (train.py, pipeline.py). Installed by the Klique worker daemon or HPC submitter on each cluster.
+clearml
+# ADAPT: a torch build whose CUDA version every cluster's GPU driver supports. 2.7.1 ships CUDA 12 wheels,
+# which run on CUDA 12 and CUDA 13 drivers alike.
+torch==2.7.1
+# ADAPT: match the transformers and tokenizers versions of the serving image, so the saved tokenizer loads in vLLM.
+transformers==4.57.5
+tokenizers==0.22.2
+peft
+accelerate
+datasets
+# call_endpoint.py only
+openai

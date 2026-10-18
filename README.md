@@ -14,6 +14,7 @@ straight from git.
 |---|---|---|
 | [`adapter-lifecycle/`](adapter-lifecycle/) | Enterprise LLMOps: One Base, Many Adapters | `prepare_datasets.py`, `finetune_adapter.py` |
 | [`meta-scheduler/`](meta-scheduler/) | ClearML Meta Scheduler (Slurm + Kubernetes) | `finetune_slurm.py` |
+| [`train-hpc-serve-k8s/`](train-hpc-serve-k8s/) | Builders series: fine-tune on the HPC cluster, serve on Kubernetes (general purpose) | `train.py`, `pipeline.py`, `call_endpoint.py` |
 
 ## How it's wired
 
