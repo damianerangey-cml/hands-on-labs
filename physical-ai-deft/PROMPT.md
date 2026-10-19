@@ -107,9 +107,16 @@ Tell me what you decided and why, including the calls that did not pay
 off. And do not let the dataset claim more than it has.
 ```
 
-**A fair thing to try live:** ask it something the grid cannot answer —
-*"`excess_solder` keeps scoring worst. Work out whether that is fixable, and if
-it is not, stop spending GPU on it."*
+### Paste 3 — keep it going
+
+After the first round, steer the loop in plain words:
+
+```
+Round 1 looks good. Keep going on a loop: generate for every class
+still under 60, score it, publish what passes, then retrain the
+inspector and compare it with the baseline. Stop when every class
+reaches 60, or when a round no longer improves the inspector.
+```
 
 ---
 
