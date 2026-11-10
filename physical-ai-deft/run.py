@@ -1,5 +1,6 @@
 """The one entry point. Every stage is this file; the task's comment says which.
 
+    stage=template
     stage=preflight
     stage=status   target=60
     stage=register
@@ -9,12 +10,11 @@
 
 HOW AN AGENT RUNS A STAGE
 -------------------------
-Create a task that points at this repository, with this file as its entry point
-and NVIDIA's image as its container. Put one line of `key=value` arguments in
-the task's comment. Enqueue it. Nothing else has to be set on the task: no
-container arguments, no setup script, no hyperparameters. Any tool that can
-create a task, edit its comment and enqueue it can drive the whole loop, and a
-clone of a finished task is a valid new run once its comment is edited.
+Once per project, run `stage=template`: it creates a draft task that carries
+NVIDIA's image and the container settings a stage needs. After that, every
+stage is the same three steps: clone the template, put one line of `key=value`
+arguments in the clone's comment, enqueue it. Any tool that can clone a task,
+edit its comment and enqueue it can drive the whole loop.
 
 When a stage ends it prints one line, `RESULT {...}`, and appends the same line
 to the task's comment, so the outcome can be read from the task list without
@@ -48,7 +48,17 @@ HOUSEKEEPING = {"clean", "mask", "pending-review"}
 
 # Stages that run NVIDIA's code and so need the image's own Python.
 HEAVY = {"register", "round", "train", "train_customer", "finetune"}
-STAGES = ("preflight", "status") + tuple(sorted(HEAVY))
+STAGES = ("template", "preflight", "status") + tuple(sorted(HEAVY))
+
+IMAGE = os.environ.get("DEFT_IMAGE", "nvcr.io/nvidia/paidf-anomalygen:1.0.1")
+TEMPLATE_NAME = "AnomalyGen stage template (clone me)"
+# NVIDIA's image runs as a non-root user. On a worker whose agent keeps its
+# caches under /root, that user cannot write them and the task dies before any
+# of this code runs: "Repository cloning failed: Permission denied:
+# /root/.clearml/vcs-cache". These move the caches somewhere any user can write.
+TEMPLATE_ARGS = ("-e CLEARML_AGENT__AGENT__VCS_CACHE__PATH=/tmp/vcs-cache "
+                 "-e CLEARML_AGENT__AGENT__PIP_DOWNLOAD_CACHE__PATH=/tmp/pip-cache "
+                 "-e CLEARML_CACHE_DIR=/tmp/clearml-cache")
 
 # The gated Hugging Face repositories generation downloads from. A token whose
 # account has not accepted their licences gets a 403, and the stage then fails
@@ -79,7 +89,7 @@ def parse_args(text):
 
 def read_args():
     """Command line first (`run.py stage=status`), then the task's comment."""
-    args = parse_args(" ".join(sys.argv[1:]))
+    args = parse_args(" ".join(shlex.quote(a) for a in sys.argv[1:]))
     if args:
         return args
     task_id = os.environ.get("CLEARML_TASK_ID")
@@ -213,6 +223,40 @@ def read_status(target=60):
 # --------------------------------------------------------------------------
 # stages
 # --------------------------------------------------------------------------
+def stage_template(args):
+    """Create the task every other stage is cloned from. Run once per project.
+
+    A stage needs container arguments that a plain "create task" call cannot
+    always set (see TEMPLATE_ARGS). This stage writes them once, onto a draft
+    task; cloning that draft copies them, so every stage after this one is
+    clone, set the comment, enqueue. It needs no GPU and not NVIDIA's image.
+    """
+    from clearml import Task
+    from ag_common import bind_task
+    task = bind_task()
+    script = getattr(getattr(task, "data", None), "script", None) if task else None
+    project = args.get("project") or (task.get_project_name() if task else None)
+    repo = args.get("repo") or getattr(script, "repository", None)
+    branch = args.get("branch") or getattr(script, "branch", None)
+    if not (project and repo and branch):
+        raise SystemExit("template needs project=, repo= and branch= when it "
+                         "is not run as a task")
+    for old in Task.get_tasks(project_name=project, task_name="^%s$"
+                              % TEMPLATE_NAME.replace("(", r"\(").replace(")", r"\)"),
+                              task_filter={"status": ["created"],
+                                           "system_tags": ["-archived"]}):
+        return {"template": old.id, "name": TEMPLATE_NAME, "reused": True}
+    t = Task.create(project_name=project, task_name=TEMPLATE_NAME,
+                    task_type=Task.TaskTypes.data_processing,
+                    repo=repo, branch=branch,
+                    script="physical-ai-deft/run.py", working_directory=".",
+                    docker=IMAGE, docker_args=TEMPLATE_ARGS)
+    t.set_comment("Do not enqueue this task. Clone it, set the clone's comment "
+                  "to the stage arguments, and enqueue the clone.")
+    return {"template": t.id, "name": TEMPLATE_NAME, "reused": False,
+            "repo": repo, "branch": branch}
+
+
 def stage_preflight(args):
     """Can this queue run the loop? Checks everything that fails late and
     obscurely otherwise, and reports it in one place. Prints no secret."""

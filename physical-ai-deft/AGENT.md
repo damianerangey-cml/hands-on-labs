@@ -10,22 +10,27 @@ what to do next. Use the platform's MCP tools for all of it.
 
 ## How to run a stage
 
-Every stage is the same three calls:
-
-1. **Create a task** in the project you were given, with
+**Once per project, make the template.** Look in the project for a draft task
+named `AnomalyGen stage template (clone me)`. If there is none, create a task
+with
    - repository: this repository's URL, and the branch you cloned
    - entry point: `physical-ai-deft/run.py`
-   - container image: `nvcr.io/nvidia/paidf-anomalygen:1.0.1`
-   - a name that says what this run is for
-2. **Set the task's comment** to one line of arguments, starting with `stage=`.
-3. **Enqueue it** on the queue you were told to use, and watch it.
+   - no container image
+   - comment: `stage=template`
+
+and enqueue it on the CPU queue. Its result gives you the template's task id.
+The template carries NVIDIA's container image and the container settings a
+stage needs, which is why stages are cloned from it rather than created.
+
+**Every stage after that is the same three calls:**
+
+1. **Clone the template**, with a name that says what this run is for.
+2. **Set the clone's comment** to one line of arguments, starting with `stage=`.
+3. **Enqueue the clone** on the queue you were told to use, and watch it.
 
 When the task ends, its comment has a second line, `RESULT {...}`, with
 everything the stage measured. Read it from the task rather than the log. Read
-the log when a task fails.
-
-Nothing else needs setting on a task. You may clone a finished task instead of
-creating one, as long as you set the clone's comment to the new arguments.
+the log when a task fails. Never enqueue the template itself.
 
 ## The stages
 
@@ -61,8 +66,11 @@ it every GPU task downloads them again, which is slower and not wrong.
 
 ## The order
 
-1. `preflight` on the GPU queue. Do not continue past a failed preflight, and
-   do not work around what it reports. Tell the user what is missing.
+0. The template, if the project does not have one.
+1. `preflight` on the GPU queue. **If your preflight fails, stop and tell the
+   user why.** Do not continue, do not work around what it reports, and do not
+   substitute the result of any other preflight, however recent: only the one
+   you just ran counts.
 2. `status`. If nothing is published, `register`.
 3. `train baseline=1`, once, before any round. Without the control nothing
    later can be compared with anything.

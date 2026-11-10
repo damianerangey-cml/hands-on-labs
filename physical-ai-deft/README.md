@@ -9,9 +9,9 @@ generates the missing defects with NVIDIA's AnomalyGen, keeps only the frames
 that score well against the real examples, publishes them as the next dataset
 version, and retrains an inspection model to see whether it helped.
 
-Every step is a task on a queue. The agent holds no GPU. It creates a task,
-writes one line of arguments into the task's comment, enqueues it and reads
-the result back, so any tool that can do those three things can drive the loop.
+Every step is a task on a queue. The agent holds no GPU. It clones a template
+task, writes one line of arguments into the clone's comment, enqueues it and
+reads the result back, so any tool that can do those things can drive the loop.
 
 ## Run it
 
@@ -37,7 +37,7 @@ volume that outlives a task is only a speed-up for the checkpoint download.
 
 | File | What it is |
 |---|---|
-| `run.py` | The one entry point. Reads `stage=...` from the task's comment and runs that stage. |
+| `run.py` | The one entry point. Reads `stage=...` from the task's comment and runs that stage. `stage=template` creates the task the others are cloned from. |
 | `register_real.py` | NVIDIA's 86 real images into HyperDataset version `v1-real`. |
 | `anomalygen_generate.py` | Mask placement from the board's CAD, then generation, allocated by shortfall. |
 | `anomalygen_evaluate.py` | NVIDIA's `nn_score` for every frame against the real examples. |
