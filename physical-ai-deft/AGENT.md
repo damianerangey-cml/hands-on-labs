@@ -87,6 +87,10 @@ it every GPU task downloads them again, which is slower and not wrong.
   label only when the gate accepted it. The rest are published as
   `pending-review` and count toward nothing. Do not lower the threshold to hit
   a target.
+- **Current state comes from `stage=status`, not from old tasks.** Ignore
+  archived tasks, and never treat an earlier task's result as true now: the
+  dataset may have changed or been deleted since it ran. Before you rely on
+  what is published, read it with a fresh `stage=status` or your own preflight.
 - **Do not guess a queue.** A queue nobody serves accepts a task and holds it
   forever. If you were not told which queue to use, list them and ask.
 - **Credentials never go on a task.** Not in the comment, the name or the
