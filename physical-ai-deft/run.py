@@ -66,6 +66,26 @@ TEMPLATE_ARGS = ("-e CLEARML_AGENT__AGENT__VCS_CACHE__PATH=/tmp/vcs-cache "
 GATED = ("nvidia/Cosmos-Predict2-2B-Text2Image", "nvidia/Cosmos-Guardrail1")
 
 
+_HF_PROBE = r"""
+import json, sys, tempfile
+from huggingface_hub import HfApi, hf_hub_download
+out = {}
+for repo in sys.argv[1:]:
+    try:
+        files = [s.rfilename for s in HfApi().model_info(repo).siblings]
+        small = next((f for f in files if f.lower().endswith((".md", ".txt", ".json"))), files[0])
+        hf_hub_download(repo, small, force_download=True, local_dir=tempfile.mkdtemp())
+        out[repo] = "ok"
+    except Exception as e:
+        chain = []
+        while e is not None and len(chain) < 4:
+            chain.append("%s: %s" % (type(e).__name__, " ".join(str(e).split())[:260]))
+            e = e.__cause__ or e.__context__
+        out[repo] = " <- ".join(chain)
+print("HFCHECK " + json.dumps(out))
+"""
+
+
 # --------------------------------------------------------------------------
 # arguments
 # --------------------------------------------------------------------------
@@ -366,34 +386,25 @@ def stage_preflight(args):
         blocking.append("HF_TOKEN is not in the task environment (it belongs in "
                         "the platform's secret store or your Configuration "
                         "Vault, never on the task)")
-    else:
-        import urllib.error
-        import urllib.request
+    elif py:
+        # Download one small file from each gated repository, with the same
+        # library and interpreter NVIDIA's downloader uses. Asking the API
+        # whether the token "has access" is not the same thing: it said yes on
+        # a worker where the real download then failed.
+        probe = subprocess.run([py, "-c", _HF_PROBE] + list(GATED),
+                               env=_clean_env(), capture_output=True, text=True)
         access = {}
-        for repo in GATED:
-            req = urllib.request.Request(
-                "https://huggingface.co/api/models/%s" % repo,
-                headers={"Authorization": "Bearer %s" % os.environ["HF_TOKEN"]})
-            try:
-                with urllib.request.urlopen(req, timeout=30) as res:
-                    gated = json.loads(res.read()).get("gated")
-                # The API answers 200 for a gated repo you may not download, so
-                # ask for a file as well.
-                head = urllib.request.Request(
-                    "https://huggingface.co/%s/resolve/main/README.md" % repo,
-                    method="HEAD",
-                    headers={"Authorization": "Bearer %s" % os.environ["HF_TOKEN"]})
-                with urllib.request.urlopen(head, timeout=30):
-                    access[repo] = "ok" + (" (gated, accepted)" if gated else "")
-            except urllib.error.HTTPError as e:
-                access[repo] = "HTTP %s" % e.code
-                blocking.append("the HF_TOKEN account cannot download %s (HTTP "
-                                "%s): accept its licence on huggingface.co"
-                                % (repo, e.code))
-            except Exception as e:                      # no route, DNS, proxy
-                access[repo] = "unreachable: %s" % e.__class__.__name__
-                blocking.append("huggingface.co is unreachable from this worker")
+        for line in probe.stdout.splitlines():
+            if line.startswith("HFCHECK "):
+                access = json.loads(line[8:])
+        if not access:
+            access = {r: "probe failed: %s" % (probe.stderr or probe.stdout)[-300:]
+                      for r in GATED}
         facts["hf_access"] = access
+        for repo, verdict in access.items():
+            if verdict != "ok":
+                blocking.append("cannot download from %s with this HF_TOKEN: %s"
+                                % (repo, verdict))
     if not (creds["NGC_KEY"] or creds["NGC_API_KEY"]):
         notes.append("NGC_KEY / NGC_API_KEY are not set; the image pulled, so "
                      "this only matters if a stage fetches from NGC")
