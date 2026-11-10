@@ -15,7 +15,7 @@ named `AnomalyGen stage template (clone me)`. If there is none, create a task
 with
    - repository: this repository's URL, and the branch you cloned
    - entry point: `physical-ai-deft/run.py`
-   - no container image
+   - container image: `python:3.11` (any plain Python image; not NVIDIA's)
    - comment: `stage=template`
 
 and enqueue it on the CPU queue. Its result gives you the template's task id.
