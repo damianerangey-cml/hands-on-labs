@@ -1,0 +1,467 @@
+"""The one entry point. Every stage is this file; the task's comment says which.
+
+    stage=preflight
+    stage=status   target=60
+    stage=register
+    stage=train    baseline=1
+    stage=round    n=48 gap=bridge:52,excess_solder:44 search=1
+    stage=train    name=inspector-round1
+
+HOW AN AGENT RUNS A STAGE
+-------------------------
+Create a task that points at this repository, with this file as its entry point
+and NVIDIA's image as its container. Put one line of `key=value` arguments in
+the task's comment. Enqueue it. Nothing else has to be set on the task: no
+container arguments, no setup script, no hyperparameters. Any tool that can
+create a task, edit its comment and enqueue it can drive the whole loop, and a
+clone of a finished task is a valid new run once its comment is edited.
+
+When a stage ends it prints one line, `RESULT {...}`, and appends the same line
+to the task's comment, so the outcome can be read from the task list without
+downloading a log.
+
+WHAT THIS FILE DOES BEFORE THE STAGE STARTS
+-------------------------------------------
+NVIDIA's image carries torch and every AnomalyGen dependency in its own Python.
+An agent that builds a virtual environment for the task hides them. So this
+file checks whether the interpreter it was started with can import torch, and
+if it cannot, finds the image's own Python and starts again under that.
+"""
+import json
+import os
+import shlex
+import shutil
+import subprocess
+import sys
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+if HERE not in sys.path:
+    sys.path.insert(0, HERE)
+
+# Set before anything imports clearml or huggingface_hub.
+os.environ.setdefault("HF_HUB_DISABLE_XET", "1")          # Xet stalls on some networks
+os.environ.setdefault("CLEARML_CACHE_DIR", "/tmp/clearml-cache")  # writable by any uid
+
+DATASET = os.environ.get("DEFT_HYPERDATASET", "PCB Inspection")
+UC = os.environ.get("DEFT_DATASET", "pcb-uc1")
+HOUSEKEEPING = {"clean", "mask", "pending-review"}
+
+# Stages that run NVIDIA's code and so need the image's own Python.
+HEAVY = {"register", "round", "train", "train_customer", "finetune"}
+STAGES = ("preflight", "status") + tuple(sorted(HEAVY))
+
+# The gated Hugging Face repositories generation downloads from. A token whose
+# account has not accepted their licences gets a 403, and the stage then fails
+# on "4 artifact(s) missing", which says nothing about licences.
+GATED = ("nvidia/Cosmos-Predict2-2B-Text2Image", "nvidia/Cosmos-Guardrail1")
+
+
+# --------------------------------------------------------------------------
+# arguments
+# --------------------------------------------------------------------------
+def parse_args(text):
+    """`stage=round n=48 gap=bridge:52` -> {'stage': 'round', 'n': '48', ...}.
+
+    Only the first line that contains `stage=` is read, so a RESULT line
+    appended by an earlier run of a cloned task is ignored.
+    """
+    for line in (text or "").splitlines():
+        if "stage=" not in line:
+            continue
+        out = {}
+        for tok in shlex.split(line):
+            key, sep, val = tok.partition("=")
+            if sep and key:
+                out[key.strip().lower().replace("-", "_")] = val.strip()
+        return out
+    return {}
+
+
+def read_args():
+    """Command line first (`run.py stage=status`), then the task's comment."""
+    args = parse_args(" ".join(sys.argv[1:]))
+    if args:
+        return args
+    task_id = os.environ.get("CLEARML_TASK_ID")
+    if task_id:
+        try:
+            import clearml  # noqa: F401
+        except ImportError:
+            # A worker set up to skip the virtual environment runs the image's
+            # Python directly, and NVIDIA's image does not ship clearml.
+            subprocess.run([sys.executable, "-m", "pip", "install", "-q",
+                            "--no-input", "clearml", "scikit-learn"], check=True)
+        from clearml import Task
+        return parse_args(Task.get_task(task_id=task_id).comment)
+    return {}
+
+
+def parse_counts(text):
+    """`bridge:52,excess_solder:44` -> {'bridge': 52, 'excess_solder': 44}."""
+    out = {}
+    for part in (text or "").split(","):
+        key, _, val = part.strip().partition(":")
+        if key and val:
+            out[key.strip()] = int(val)
+    return out
+
+
+def truthy(v):
+    return str(v or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+# --------------------------------------------------------------------------
+# the image's own Python
+# --------------------------------------------------------------------------
+def _clean_env():
+    """The environment without the task's virtual environment in it."""
+    env = dict(os.environ)
+    venv = env.pop("VIRTUAL_ENV", None)
+    for k in ("PYTHONPATH", "PYTHONHOME"):
+        env.pop(k, None)
+    if venv:
+        env["PATH"] = os.pathsep.join(
+            p for p in env.get("PATH", "").split(os.pathsep)
+            if not p.startswith(venv))
+    return env
+
+
+def _imports(python, modules, env=None):
+    try:
+        return subprocess.run([python, "-c", "import " + ", ".join(modules)],
+                              env=env, capture_output=True, timeout=180
+                              ).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def image_python():
+    """An interpreter that can import torch, or None. The current one wins."""
+    if _imports(sys.executable, ["torch"]):
+        return sys.executable
+    env = _clean_env()
+    seen = []
+    for cand in ([os.environ.get("DEFT_PYTHON")]
+                 + [shutil.which(n, path=env.get("PATH")) for n in ("python3", "python")]
+                 + ["/usr/bin/python3", "/usr/local/bin/python3",
+                    "/opt/conda/bin/python3", "/usr/bin/python"]):
+        if cand and cand not in seen and os.path.exists(cand):
+            seen.append(cand)
+            if _imports(cand, ["torch"], env):
+                return cand
+    return None
+
+
+def reexec_under_image_python(args):
+    """Start this file again under the interpreter that has NVIDIA's packages."""
+    if _imports(sys.executable, ["torch"]):
+        return
+    if os.environ.get("DEFT_REEXEC"):
+        raise SystemExit("still no torch after switching interpreter -- is this "
+                         "NVIDIA's AnomalyGen image?")
+    python = image_python()
+    if not python:
+        raise SystemExit(
+            "no interpreter in this container can import torch. The task's "
+            "container image must be NVIDIA's AnomalyGen image "
+            "(nvcr.io/nvidia/paidf-anomalygen:1.0.1 unless you rebuilt it).")
+    env = _clean_env()
+    if not _imports(python, ["clearml", "sklearn"], env):
+        print("installing clearml and scikit-learn for %s" % python, flush=True)
+        subprocess.run([python, "-m", "pip", "install", "-q", "--no-input",
+                        "clearml", "scikit-learn"], env=env, check=True)
+    env["DEFT_REEXEC"] = "1"
+    print("switching to the image's own Python: %s" % python, flush=True)
+    sys.stdout.flush()
+    os.execve(python, [python, os.path.abspath(__file__)]
+              + ["%s=%s" % kv for kv in args.items()], env)
+
+
+# --------------------------------------------------------------------------
+# reading the dataset
+# --------------------------------------------------------------------------
+def read_status(target=60):
+    """Every published version with its label counts, and the current gap.
+
+    Server-side label counts: about a second, no pixels moved. This is the read
+    the whole method turns on.
+    """
+    import hyperdataset as hd
+    ds_id = hd.find_dataset(DATASET)
+    if not ds_id:
+        return {"dataset": None, "versions": [], "gap": {}, "at_target": [],
+                "note": "no HyperDataset %r here yet -- run stage=register" % DATASET}
+    versions = hd._call("get_versions", {"dataset": ds_id, "only_published": True,
+                                         "page": 0, "page_size": 200}
+                        ).get("versions") or []
+    versions.sort(key=lambda v: (v.get("created") or "", v.get("name") or ""))
+    out = [{"name": v.get("name"), "id": v["id"],
+            "counts": hd.stats(v["id"])["labels"]} for v in versions]
+    counts = out[-1]["counts"] if out else {}
+    return {
+        "dataset": ds_id, "target": target, "versions": out,
+        "latest": out[-1]["name"] if out else None,
+        "counts": counts,
+        "gap": {k: target - n for k, n in counts.items()
+                if k not in HOUSEKEEPING and n < target},
+        "at_target": sorted(k for k, n in counts.items()
+                            if k not in HOUSEKEEPING and n >= target),
+        "pending_review": counts.get("pending-review", 0),
+    }
+
+
+# --------------------------------------------------------------------------
+# stages
+# --------------------------------------------------------------------------
+def stage_preflight(args):
+    """Can this queue run the loop? Checks everything that fails late and
+    obscurely otherwise, and reports it in one place. Prints no secret."""
+    blocking, notes, facts = [], [], {}
+
+    facts["python"] = sys.executable
+    py = image_python()
+    facts["image_python"] = py
+    if not py:
+        blocking.append("no Python in this container imports torch -- the task "
+                        "is not running in NVIDIA's AnomalyGen image")
+    else:
+        probe = subprocess.run(
+            [py, "-c",
+             "import torch, json; ok = torch.cuda.is_available(); "
+             "print(json.dumps({'torch': torch.__version__, 'cuda': ok, "
+             "'gpu': torch.cuda.get_device_name(0) if ok else None, "
+             "'gpu_gb': round(torch.cuda.get_device_properties(0).total_memory / 2**30, 1) if ok else 0, "
+             "'gpus': torch.cuda.device_count() if ok else 0}))"],
+            env=_clean_env(), capture_output=True, text=True)
+        try:
+            facts.update(json.loads(probe.stdout.strip().splitlines()[-1]))
+        except (ValueError, IndexError):
+            facts["torch_error"] = (probe.stderr or probe.stdout)[-300:]
+        if not facts.get("cuda"):
+            blocking.append("no GPU is visible to torch on this queue")
+        elif facts.get("gpu_gb", 0) < 22:
+            blocking.append("the GPU has %.1f GB; generation needs a whole GPU "
+                            "of about 24 GB" % facts["gpu_gb"])
+        elif facts.get("gpu_gb", 0) < 30:
+            notes.append("enough for every stage except finetune, which needs "
+                         "more than 24 GB; NVIDIA's published adapter is used instead")
+
+    import ag_common
+    facts["nvidia_code"] = os.path.isdir(ag_common.REPO_ROOT)
+    if not facts["nvidia_code"]:
+        blocking.append("NVIDIA's code is not at %s (set DEFT_AG_REPO_ROOT if "
+                        "your image keeps it elsewhere)" % ag_common.REPO_ROOT)
+
+    facts["uid"] = os.getuid()
+    facts["shm_gb"] = round(shutil.disk_usage("/dev/shm").total / 2**30, 1) \
+        if os.path.isdir("/dev/shm") else 0
+    if facts["shm_gb"] < 8:
+        notes.append("/dev/shm is %.1f GB; NVIDIA's docker run line uses 16 GB "
+                     "and data loaders may fail below that" % facts["shm_gb"])
+    facts["cache"] = ag_common.CACHE
+    facts["cache_persists"] = bool(os.environ.get("DEFT_CACHE")) \
+        and ag_common.CACHE == os.environ.get("DEFT_CACHE")
+    facts["cache_free_gb"] = round(shutil.disk_usage(ag_common.CACHE).free / 2**30, 1)
+    if facts["cache_free_gb"] < 45:
+        blocking.append("%.0f GB free at %s; the checkpoints alone are about "
+                        "22 GB" % (facts["cache_free_gb"], ag_common.CACHE))
+    if not facts["cache_persists"]:
+        notes.append("no persistent cache: each task downloads about 22 GB of "
+                     "checkpoints again. Pass cache=<path> if the workers have "
+                     "a volume that outlives a task")
+
+    creds = {k: bool(os.environ.get(k)) for k in ("HF_TOKEN", "NGC_KEY", "NGC_API_KEY")}
+    facts["credentials_present"] = creds
+    if not creds["HF_TOKEN"]:
+        blocking.append("HF_TOKEN is not in the task environment (it belongs in "
+                        "the platform's secret store or your Configuration "
+                        "Vault, never on the task)")
+    else:
+        import urllib.error
+        import urllib.request
+        access = {}
+        for repo in GATED:
+            req = urllib.request.Request(
+                "https://huggingface.co/api/models/%s" % repo,
+                headers={"Authorization": "Bearer %s" % os.environ["HF_TOKEN"]})
+            try:
+                with urllib.request.urlopen(req, timeout=30) as res:
+                    gated = json.loads(res.read()).get("gated")
+                # The API answers 200 for a gated repo you may not download, so
+                # ask for a file as well.
+                head = urllib.request.Request(
+                    "https://huggingface.co/%s/resolve/main/README.md" % repo,
+                    method="HEAD",
+                    headers={"Authorization": "Bearer %s" % os.environ["HF_TOKEN"]})
+                with urllib.request.urlopen(head, timeout=30):
+                    access[repo] = "ok" + (" (gated, accepted)" if gated else "")
+            except urllib.error.HTTPError as e:
+                access[repo] = "HTTP %s" % e.code
+                blocking.append("the HF_TOKEN account cannot download %s (HTTP "
+                                "%s): accept its licence on huggingface.co"
+                                % (repo, e.code))
+            except Exception as e:                      # no route, DNS, proxy
+                access[repo] = "unreachable: %s" % e.__class__.__name__
+                blocking.append("huggingface.co is unreachable from this worker")
+        facts["hf_access"] = access
+    if not (creds["NGC_KEY"] or creds["NGC_API_KEY"]):
+        notes.append("NGC_KEY / NGC_API_KEY are not set; the image pulled, so "
+                     "this only matters if a stage fetches from NGC")
+
+    try:
+        status = read_status(int(args.get("target") or 60))
+        facts["hyperdatasets"] = "ok"
+        facts["dataset"] = status.get("latest") or status.get("note")
+        facts["gap"] = status.get("gap")
+    except Exception as e:
+        facts["hyperdatasets"] = "%s: %s" % (e.__class__.__name__, str(e)[:200])
+        blocking.append("the HyperDataset API did not answer -- the loop keeps "
+                        "its state there")
+
+    return {"ready": not blocking, "blocking": blocking, "notes": notes,
+            "facts": facts}
+
+
+def stage_status(args):
+    return read_status(int(args.get("target") or 60))
+
+
+def stage_register(args):
+    import register_real
+    ds_id = register_real.register_real(hyperdataset_name=DATASET)
+    return dict(read_status(int(args.get("target") or 60)), dataset=ds_id)
+
+
+def stage_round(args):
+    """One enrichment round in one task: read the gap, generate against it,
+    score every frame against the real examples, optionally search, publish
+    the survivors as the next version.
+
+    Arguments, all optional:
+      n          how many images to generate (default 24)
+      gap        label:count pairs to allocate against (default: read from the
+                 dataset at `target`)
+      counts     NVIDIA defect type:count pairs, the explicit allocation; wins
+                 over gap. Types are in the log as `IC+bridge` and so on.
+      search     N runs NVIDIA's phases 5-7 with N parameter re-rolls (0 runs
+                 the filter and regeneration without the search). Leave it out
+                 to publish what the gate accepted from the first batch.
+                 EXPENSIVE: each re-roll regenerates every sample.
+      threshold  the nn_score bar (default: the batch median)
+      target     per-class target (default 60)
+      seed       generation seed (default 0)
+      run_id     defaults to this task's id, which is unique; reusing one makes
+                 publish skip the round
+    """
+    import anomalygen_evaluate as ev
+    import anomalygen_generate as gen
+    import publish_synthetic as pub
+    from ag_common import bind_task
+
+    task = bind_task()
+    target = int(args.get("target") or 60)
+    n = int(args.get("n") or 24)
+    seed = int(args.get("seed") or 0)
+    thr = float(args["threshold"]) if args.get("threshold") else None
+    run_id = args.get("run_id") or (task.id[:8] if task else "local")
+
+    before = read_status(target)
+    if not before.get("latest"):
+        raise SystemExit("nothing published yet -- run stage=register first")
+    counts = parse_counts(args.get("counts")) or None
+    gap = parse_counts(args.get("gap")) or before["gap"]
+    if not counts and not gap:
+        return {"published": 0, "note": "every class is at target; nothing to do",
+                "gap": {}, "version": before["latest"]}
+
+    g = gen.anomalygen_generate(dataset_name=UC, num_sdg=n, seed=seed,
+                                run_id=run_id, gap=gap, per_defect_counts=counts)
+    run_dir = g["output_dir"]
+    ev.anomalygen_evaluate(dataset_name=UC, run_dir=run_dir, nn_threshold=thr)
+
+    publish_dir = run_dir
+    if args.get("search") not in (None, ""):
+        import anomalygen_improve as improve
+        imp = improve.anomalygen_improve(
+            dataset_name=UC, run_dir=run_dir, rounds=int(args["search"]),
+            num_sdg=n, allocation=g.get("allocation"),
+            step=g.get("step") or 14000, checkpoint_dir=g.get("checkpoint"),
+            seed=seed, nn_threshold=thr)
+        publish_dir = imp["searched_dir"]
+
+    p = pub.publish_synthetic(hyperdataset_name=DATASET, dataset_name=UC,
+                              target_per_class=target, run_dir=publish_dir,
+                              run_id=run_id, nn_threshold=thr)
+    after = read_status(target)
+    added = {k: after["counts"].get(k, 0) - before["counts"].get(k, 0)
+             for k in after["counts"]
+             if after["counts"].get(k, 0) != before["counts"].get(k, 0)}
+    return {"run_id": run_id, "version": p.get("version_name"),
+            "asked": g.get("allocation"), "generated": g.get("delivered"),
+            "published": p.get("published"), "added": added,
+            "counts": after["counts"], "gap": after["gap"],
+            "pending_review": after["pending_review"]}
+
+
+def stage_train(args):
+    """Train the inspector on the latest published version and register it.
+
+    baseline=1 is the control: real images only. Run it once before any round,
+    or there is nothing to compare later models with.
+    """
+    import train_inspector
+    baseline = truthy(args.get("baseline"))
+    return train_inspector.train_inspector(
+        hyperdataset_name=DATASET, dataset_name=UC,
+        round_name=args.get("name") or ("inspector-baseline" if baseline else None),
+        use_synthetic=not baseline)
+
+
+def stage_train_customer(args):
+    import train_customer
+    return train_customer.train_customer(
+        hyperdataset_name=DATASET, dataset_name=UC, model_name=args.get("name"))
+
+
+def stage_finetune(args):
+    import anomalygen_finetune
+    return anomalygen_finetune.anomalygen_finetune(dataset_name=UC)
+
+
+# --------------------------------------------------------------------------
+def finish(args, result):
+    line = "RESULT " + json.dumps(result, default=str, sort_keys=True)
+    print("=" * 70, flush=True)
+    print(line, flush=True)
+    print("=" * 70, flush=True)
+    if os.environ.get("CLEARML_TASK_ID"):
+        from ag_common import bind_task
+        task = bind_task()
+        if task:
+            first = " ".join("%s=%s" % kv for kv in args.items())
+            task.set_comment(first + "\n" + line[:6000])
+
+
+def main():
+    args = read_args()
+    stage = (args.get("stage") or "").replace("-", "_")
+    if stage not in STAGES:
+        raise SystemExit(
+            "No stage to run. Put one line of arguments in the task's comment, "
+            "for example:  stage=preflight\nStages: %s\n(got: %r)"
+            % (", ".join(STAGES), args or None))
+    if args.get("cache"):
+        os.environ["DEFT_CACHE"] = args["cache"]
+    if stage in HEAVY:
+        reexec_under_image_python(args)
+
+    print("stage %s  %s" % (stage, {k: v for k, v in args.items() if k != "stage"}),
+          flush=True)
+    result = globals()["stage_" + stage](args)
+    finish(args, result)
+    if stage == "preflight" and not result["ready"]:
+        raise SystemExit("PREFLIGHT FAILED: " + "; ".join(result["blocking"]))
+
+
+if __name__ == "__main__":
+    main()

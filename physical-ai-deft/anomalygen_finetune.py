@@ -248,7 +248,3 @@ def anomalygen_finetune(dataset_name="pcb-uc1",
         task.upload_artifact("anomalygen_checkpoint_dir", trained)
     return {"checkpoint_dir": trained, "dataset_dir": dataset_dir,
             "ag_config": ag_config, "model_size": model_size}
-
-
-if __name__ == "__main__":
-    anomalygen_finetune()

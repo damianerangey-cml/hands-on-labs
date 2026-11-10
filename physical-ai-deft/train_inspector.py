@@ -63,35 +63,21 @@ import os
 from ag_common import bind_task, CACHE, ensure_dataset
 
 
-def _run_dirs(dataset_name):
-    """Every per-round generation directory, oldest first.
+def collect(dataset_dir, ds_id, version_id, use_synthetic=True):
+    """(path, label, origin) triples to train on.
 
-    Training must accumulate. Round 3 should see round 1's and round 2's
-    accepted frames as well as its own -- otherwise every round trains on the
-    same amount of data and the accuracy comparison the loop exists to produce
-    says nothing. That is not hypothetical: the first three-round run scored
-    0.968 three times because each round trained on the same 103 images.
+    The real images come from NVIDIA's prepared tree. The synthetic ones come
+    from THE PUBLISHED VERSION: every frame whose metadata says it is synthetic
+    and that the gate verified. A frame the gate did not accept is in the
+    dataset as `pending-review` and must not train anything, or the loop would
+    be marking its own homework.
+
+    Reading the version, rather than the directories earlier tasks wrote, is
+    what makes training accumulate across rounds without any storage shared
+    between tasks: round 3's version holds round 1's and round 2's accepted
+    frames as well as its own.
     """
-    import os as _os
-    root = _os.path.join(CACHE, "results", dataset_name, "runs")
-    if not _os.path.isdir(root):
-        legacy = _os.path.join(CACHE, "results", dataset_name, "original")
-        return [legacy] if _os.path.isdir(legacy) else []
-    return sorted((_os.path.join(root, d) for d in _os.listdir(root)),
-                  key=lambda q: _os.path.getmtime(q))
-
-
-def _collect(dataset_dir, results_dirs, accepted_only=True, nn_threshold=None):
-    """Build (path, label) pairs: the real images, plus synthetic that passed.
-
-    Mirrors what the HyperDataset version considers real training data --
-    verified frames only. A synthetic frame that did not clear nn_score is
-    present in the dataset as `pending-review` and must not train anything,
-    or the loop would be marking its own homework.
-    """
-    import csv
     items = []
-
     for texture in sorted(os.listdir(dataset_dir)):
         adir = os.path.join(dataset_dir, texture, "anomaly_image")
         if os.path.isdir(adir):
@@ -108,47 +94,21 @@ def _collect(dataset_dir, results_dirs, accepted_only=True, nn_threshold=None):
                 if f.lower().endswith((".png", ".jpg", ".jpeg")):
                     items.append((os.path.join(cdir, f), "clean", "real"))
 
-    # Scores are per RUN -- the same basename appears in several rounds as
-    # different images, so a run's scores must be read alongside its own CSV.
-    thresholds = []
-    for results_dir in results_dirs:
-        scores = {}
-        per_sample = os.path.join(results_dir, "per_sample.csv")
-        if os.path.exists(per_sample):
-            with open(per_sample, newline="") as fh:
-                for r in csv.DictReader(fh):
-                    try:
-                        scores[os.path.basename(r["path"])] = float(r["nn_score"])
-                    except (KeyError, TypeError, ValueError):
-                        continue
-        thr = nn_threshold
-        if scores and thr is None:
-            import statistics
-            thr = statistics.median(scores.values())
-        if thr is not None:
-            thresholds.append(thr)
-
-        sdg = os.path.join(results_dir, "SDG_result.csv")
-        if not os.path.exists(sdg):
-            continue
-        with open(sdg, newline="") as fh:
-            for r in csv.DictReader(fh):
-                p = r.get("output_filename") or ""
-                if not p or not os.path.exists(p):
-                    continue
-                nn = scores.get(os.path.basename(p))
-                if accepted_only and not (nn is not None and thr is not None
-                                          and nn >= thr):
-                    continue
-                cls = (r.get("anomaly_type") or "").split("+")[-1] or "unknown"
-                items.append((p, cls, "synthetic"))
-    return items, (sum(thresholds) / len(thresholds) if thresholds else None)
+    if use_synthetic:
+        import hyperdataset as hd
+        for fr in hd.frames(ds_id, version_id):
+            meta = fr["meta"]
+            if meta.get("origin") != "synthetic" or not meta.get("verified"):
+                continue
+            path = hd.local_copy(fr["uri"]) if fr.get("uri") else None
+            if path:
+                items.append((path, meta.get("defect") or "unknown", "synthetic"))
+    return items
 
 
 def train_inspector(hyperdataset_name="PCB Inspection",
                     dataset_name="pcb-uc1",
                     round_name=None,
-                    accepted_only=True,
                     use_synthetic=True):
     """Train on the latest published version and register the model."""
     import numpy as np
@@ -164,7 +124,6 @@ def train_inspector(hyperdataset_name="PCB Inspection",
 
     task = bind_task()
     dataset_dir = ensure_dataset(dataset_name)
-    results_dirs = _run_dirs(dataset_name)
 
     ds_id = hd.get_or_create_dataset(hyperdataset_name)
     version = hd.latest_published(ds_id)
@@ -174,13 +133,12 @@ def train_inspector(hyperdataset_name="PCB Inspection",
     print("training against %s (%s)" % (version.get("name"), version["id"]), flush=True)
     print("  version holds:", counts, flush=True)
 
-    items, thr = _collect(dataset_dir, results_dirs, accepted_only)
-    print("  accumulating over %d generation run(s)" % len(results_dirs), flush=True)
+    items = collect(dataset_dir, ds_id, version["id"], use_synthetic)
     if len(items) < 10:
         raise SystemExit("only %d training images -- nothing to learn from" % len(items))
     n_syn = sum(1 for _, _, o in items if o == "synthetic")
-    print("  training on %d images (%d real, %d synthetic accepted at nn>=%.3f)"
-          % (len(items), len(items) - n_syn, n_syn, thr or 0), flush=True)
+    print("  training on %d images (%d real, %d synthetic accepted by the gate)"
+          % (len(items), len(items) - n_syn, n_syn), flush=True)
 
     # Frozen DINOv2 -- already on the cache from AnomalyGen's phase 0.
     local = os.path.join(CACHE, "checkpoints", "facebook", "dinov2-large")
@@ -279,7 +237,6 @@ def train_inspector(hyperdataset_name="PCB Inspection",
             "label_counts_at_version": counts,
             "training_images": len(items),
             "synthetic_accepted": n_syn,
-            "nn_threshold": thr,
             "accuracy": acc,
         })
         om.update_weights(weights_filename=model_path, auto_delete_file=False)
@@ -288,20 +245,3 @@ def train_inspector(hyperdataset_name="PCB Inspection",
     return {"model": name, "accuracy": acc, "held_out_real": int(len(yte)),
             "version_id": version["id"], "version_name": version.get("name"),
             "training_images": len(items), "synthetic_accepted": n_syn}
-
-
-if __name__ == "__main__":
-    # THE CONTROL HAS TO BE REACHABLE FROM OUTSIDE. This used to be a bare
-    # train_inspector(), so `launch.py train` always trained WITH synthetic data
-    # and the real-only baseline existed only inside run_rounds.py. An agent
-    # driving the stages could therefore not run the one model that makes every
-    # later comparison mean anything -- it would have had to import the module
-    # and run training in its own process, off the GPU queue.
-    import os as _os
-    _baseline = (_os.environ.get("DEFT_BASELINE", "").lower()
-                 in ("1", "true", "yes"))
-    train_inspector(
-        round_name=_os.environ.get("DEFT_ROUND_NAME")
-                   or ("inspector-baseline" if _baseline else "inspector"),
-        use_synthetic=not _baseline,
-    )

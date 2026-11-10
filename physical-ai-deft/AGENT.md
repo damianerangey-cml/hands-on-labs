@@ -1,497 +1,113 @@
 # You own this inspection dataset
 
-> **Installed as a skill?** `.claude/skills/physical-ai-deft/` in this repo is a
-> Claude Code skill covering the same ground in brief. Clone the repo into your
-> workspace and it loads itself — no one has to remember to point you here. This
-> file is the long form; the skill is the summary that triggers.
+Your job is to get every defect class in a PCB inspection dataset to a target
+number of examples, using NVIDIA's Cosmos AnomalyGen to generate the ones that
+are missing, and to show whether that helped an inspection model.
 
+You are the control plane. You hold no GPU and you run nothing heavy. You
+create tasks on the platform, enqueue them, read what they report, and decide
+what to do next. Use the platform's MCP tools for all of it.
 
+## How to run a stage
 
-You are running in a workspace with this repository cloned and ClearML
-credentials already in the environment. There is a GPU behind a queue. You do
-not hold it; you submit work to it.
+Every stage is the same three calls:
 
-That workspace may be a hosted lab session, a container, or somebody's laptop —
-this file does not assume, and neither should you. Everything you need to know
-about where you are, you can find out by asking the server.
+1. **Create a task** in the project you were given, with
+   - repository: this repository's URL, and the branch you cloned
+   - entry point: `physical-ai-deft/run.py`
+   - container image: `nvcr.io/nvidia/paidf-anomalygen:1.0.1`
+   - a name that says what this run is for
+2. **Set the task's comment** to one line of arguments, starting with `stage=`.
+3. **Enqueue it** on the queue you were told to use, and watch it.
 
-Your job is to close the gap between the defect examples this dataset has and
-the ones it needs — and to be honest about how far you got.
+When the task ends, its comment has a second line, `RESULT {...}`, with
+everything the stage measured. Read it from the task rather than the log. Read
+the log when a task fails.
 
-Nothing here is a script to run in order. These are operations. You decide what
-to call, with what, and when to stop.
+Nothing else needs setting on a task. You may clone a finished task instead of
+creating one, as long as you set the clone's comment to the new arguments.
 
----
+## The stages
 
-## Your state is the dataset, not a file
-
-```python
-import deft
-deft.gap()        # {'version', 'counts', 'gap', 'at_target'}
-deft.history()    # every published version and registered model so far
-```
-
-`gap()` is server-side label counts: about a second, downloads nothing. Ask it
-as often as you like — before deciding, after publishing, and first thing if
-you have lost your place.
-
-**Keep no local state file.** If you crash mid-round, restart and ask what is
-true now. A previous you may have published a version you have no memory of;
-`history()` is how you find out. This is the one thing that makes the loop
-survive its own driver, so do not undermine it by keeping notes on disk and
-trusting them over the server.
-
----
-
-## You are probably not on the server this was built on
-
-This repository was written against one particular ClearML deployment. Its queue
-names, its dataset name and its GPU sizes are **local conventions, not facts**.
-Assuming them somewhere else fails in the worst available way: enqueueing to a
-queue nobody serves is accepted silently and then sits in `queued` forever,
-because "no worker has picked this up yet" and "this queue does not exist" look
-identical from outside.
-
-So before the first launch:
-
-```python
-deft.queues()          # what is actually here, and whether anything serves it
-deft.pick_queue("gpu") # resolves, or raises with the question to ask
-```
-
-**There are no built-in queue names**, and that is not an oversight. An earlier
-version of this file carried the original deployment's names as fallbacks; on a
-server that spelled one of them differently it refused, and the tempting fix —
-match more loosely — is the bug, not the cure. A name that almost matches
-somebody else's cluster turns *"I need to ask"* into *"I found it"*, and the
-thing it found may be eight fractional slices of one card.
-
-`pick_queue` also does not guess from names. A queue called `gpu-shared` might
-be exactly that, and the API does not expose enough to tell. When it cannot
-resolve, it raises with the real queue list and the question. **Ask it.** Ten
-seconds of a person's time beats a demo that hangs.
-
-Three roles to fill, and you may need one answer per role:
-
-| Role | What it needs | Optional? |
+| Comment | What it does | Needs |
 |---|---|---|
-| `gpu` | a whole GPU, 24 GB is enough — generation, scoring, training | no |
-| `cpu` | no GPU — registration and coordination | no |
-| `gpu_large` | **more than 24 GB** — only the phase-1 fine-tune. It peaked about 4.5 GiB over a 24 GB card; 40, 48 and 80 GB cards all fit. On a cluster whose `gpu` queue already has cards that size, it is the same queue. | **yes** |
+| `stage=preflight` | Checks the queue can run the loop: GPU and its memory, NVIDIA's image, credentials, access to the gated model repositories, disk, and that HyperDatasets answer. Fails with the reasons if not. | the GPU queue |
+| `stage=status target=60` | Every published dataset version with its label counts, and the gap to the target. No GPU work. | any queue |
+| `stage=register` | Registers NVIDIA's 86 real images as version `v1-real`. Safe to repeat: it reuses the version if it exists. | any queue |
+| `stage=train baseline=1` | The control: trains the inspector on real images only. | the GPU queue |
+| `stage=round n=48` | One enrichment round: reads the gap, generates against it, scores every frame against the real examples, publishes the survivors as the next version. | the GPU queue |
+| `stage=train name=inspector-round1` | Trains the inspector on the latest version (real plus the synthetic frames the gate accepted) and registers the model. | the GPU queue |
 
-**A queue existing is not evidence anything runs it.** Measured on a live
-server: 255 queues, of which exactly **two** had compute behind them — one CPU
-autoscaler and one GPU autoscaler. The other 253 were real, listed, accepting,
-and served by nothing. No API call distinguishes them; `workers` reads 0 on all
-of them (see `queues()` below for why). The mapping lives in the autoscaler or
-pool configuration, which you cannot see.
+Arguments for `stage=round`, all optional:
 
-This is the whole reason the question goes to a person. Do not treat a plausible
-name as a shortlist. On that server the queues whose names advertised exactly
-what this pipeline wants were among the dead ones, and the two live ones were
-named after nothing in particular — someone's initials, a ticket number, an
-internal team's shorthand. Queue names are chosen by whoever creates them and
-are under no obligation to describe what is behind them.
-
-`queues()` gives you one piece of real evidence: `recent_tasks`, how many of the
-last thousand tasks ran there. A queue that has run work has demonstrably run
-work.
-
-**Measured, so you know what it is worth.** On the 255-queue server, 16 queues
-had any history at all — a 94% cut, and genuinely useful. But the two the
-operator actually wanted were **not** the busiest. The correct CPU queue came
-second; the correct GPU queue came **tenth**, with two tasks against the leader's
-forty-nine. The busiest queues belonged to other people.
-
-So **do not sort by `recent_tasks` and take the top** — that would have picked
-wrong here, for both roles. The number tells you which queues are worth putting
-in front of a person. It does not tell you which one is yours. If you catch
-yourself reasoning about which of the sixteen is most likely, stop: that is the
-same guessing this mechanism exists to prevent, wearing a number instead of a
-name.
-
-### Ask the question, do not also answer it
-
-**When you ask, do not rank the options and do not name a favourite.** This is
-the failure that actually happened, and it is subtle enough to be worth spelling
-out: an agent refused all three roles for want of evidence, and then, in the same
-reply, produced a table of recommendations reasoned from queue names — the
-evidence it had just called insufficient. The human approved the table instead of
-supplying the answer they already had, and two of the three were dead queues.
-
-A question with a confident recommendation attached is not a question. It is a
-proposal inviting a rubber stamp, and it costs you the one thing you asked for:
-what the person knows and you cannot. So present the list, say plainly what you
-cannot determine, and stop. `pick_queue`'s own error message is written this way
-— **quote it rather than paraphrasing it into advice.**
-
-Once you have the answers, **write them down**:
-
-```python
-deft.set_queues(gpu="...", cpu="...", gpu_large="...")
-deft.set_queues(gpu_large="...")   # may name the same queue as gpu, if its cards are big enough
-deft.set_queues(gpu_large=False)   # "there is no large-GPU queue here" -- also an answer
-```
-
-`False` is not the same as leaving it out. It records *asked and answered:
-none*, and `pick_queue("gpu_large")` then raises `deft.NoSuchQueue` — catch that
-and skip the fine-tune. Leaving it out records nothing, so you will ask again
-next time, and an agent that keeps asking eventually guesses.
-
-It checks each name against the server before recording it — a typo saved to
-disk would reproduce the exact silent hang this is here to prevent, only
-permanently — and stores them in `~/.deft/config.json`.
-
-Use that rather than `export`. **Your shell does not survive between commands**:
-an env var you set in one call is gone by the next, so an agent told to export
-something re-asks forever and eventually starts guessing instead. The file is
-what makes asking a one-time cost. (`DEFT_QUEUE_GPU` and friends still work, and
-take precedence — they are for a deployment that wants to inject the answer, or
-for a one-off override.)
-
-If there is no GPU larger than 24 GB at all, say so and skip the fine-tune —
-the rest of the pipeline runs on 24 GB, using NVIDIA's published adapter.
-(`gpu48` is the old name for `gpu_large`; it is still accepted.)
-
-### Two more things only the person can tell you
-
-**Shared storage for the stages.** Stages hand files to each other through a
-path every task can see (`DEFT_CACHE`, default `/cache`): a PVC mounted on
-every task pod on Kubernetes, a bind-mounted host path on VM workers. Ask
-whether one exists and where. Without one, each stage falls back to its own
-scratch space and says so in its log: fine for a single-task run
-(`launch.py rounds`), but a later stage cannot see an earlier stage's output,
-and it fails with *no SDG_result.csv*, which reads as if generation never ran.
-
-**Credentials for NVIDIA's container and weights.** The stages need `NGC_KEY`
-(some of NVIDIA's tooling reads `NGC_API_KEY`: set both) and `HF_TOKEN` in the
-**task's** environment, and the workers need pull access to `nvcr.io`. They
-come from the platform, never from you: the user's Configuration Vault
-(an `environment { ... }` block) where the agents apply vaults, or a Kubernetes
-secret projected into task pods. Never pass them as task parameters or
-docker arguments: those are readable by anyone with project access. The
-parity probe (below) reports whether they arrived, without printing them.
-
-### Everything else that is a local convention
-
-Each of these has a default that is right *here* and may be wrong where you are.
-All are environment variables, so you can fix one without editing code.
-
-| Variable | Default | Breaks how, if wrong |
-|---|---|---|
-| `DEFT_REPO` | this checkout's `origin`, SSH rewritten to HTTPS | **Read this one.** The agent clones this URL — if it points at the upstream while you are editing a fork, your task runs *the original code* and your edits are silently ignored. You then debug something that is not running. |
-| `DEFT_BRANCH` | this checkout's current branch | Same class of problem: a task running a branch you are not on. |
-| `DEFT_IMAGE` | `nvcr.io/nvidia/paidf-anomalygen:1.0.1` | A different NVIDIA release, or your own rebuild from their Apache-2.0 source. |
-| `DEFT_AG_REPO_ROOT` | `/workspace/paidf-anomalygen` | Where NVIDIA's code sits *inside* the image. A rebuild can move it, and every stage then dies on a relative script path with a bare "No such file or directory". |
-| `DEFT_CACHE` | `/cache` | The shared path between stages. Without one, each stage re-downloads ~22 GB — slow, not wrong. |
-| `DEFT_PROJECT` | `Physical AI Inspection` | Where tasks and models land. |
-| `DEFT_HYPERDATASET` | `PCB Inspection` | Which dataset the gap is read from. |
-| `DEFT_DATASET` | `pcb-uc1` | NVIDIA's use-case id. **`ensure_dataset` calls `prepare_dataset_uc1.py`** — they ship `uc2` and `uc3` too, and this repository has only ever been run against `uc1`. Another use case needs that call generalised, not just this variable changed. |
-
-Two things are **not** parameterised and you should know why:
-
-- **The defect types are read from `defect_spec.jsonl`**, not configured. They
-  used to be a hardcoded PCB list, which silently scored the wrong classes on
-  any other dataset — the eval returns NaN for types that are absent and never
-  looks at the ones present, so the batch comes back "unscored" for a reason
-  nothing in the output explains.
-- **The adapter and its step (`Cosmos-AnomalyGen-PCB-2B`, iteration 14000) are
-  pinned** in `anomalygen_generate.py`. They are NVIDIA's published PCB
-  weights. A different use case needs different weights, and that is a real
-  change rather than a setting.
-
-## Find the interpreter that owns the packages — do not repair anything
-
-This repository needs exactly one Python package where you are: the ClearML SDK
-(`requirements.txt`). Everything heavy runs inside NVIDIA's container on a
-worker. But a container can have more than one Python, and the one on `PATH`
-is not necessarily the one with your packages.
-
-**First, find the interpreter that already imports `clearml`:**
-
-```bash
-for p in $(which -a python3 python 2>/dev/null) /usr/local/bin/python3 /usr/bin/python3; do
-  [ -x "$p" ] && echo "$p: $($p -c 'import clearml,sys; print(sys.version.split()[0], clearml.__version__)' 2>&1 | tail -1)"
-done
-```
-
-Use that binary for every Python call. On one Claude Code app image it was
-`/usr/local/bin/python3` (3.11, with everything), while the `python3` on `PATH`
-was a bare 3.13 that died with `SRE module mismatch`. Your image may differ,
-which is why you look rather than assume.
-
-**If none imports `clearml`**, install the one requirement for your user only,
-with an interpreter that has pip, and then *verify the import* (not the install
-message):
-
-```bash
-<python> -m pip install --user -r requirements.txt
-<python> -c "import clearml; print(clearml.__version__)"
-```
-
-The platform's Claude Code app sets the `CLEARML_*` connection variables for
-you; `clearml` reads them, so no `clearml.conf` is needed.
-
-### Two ways this has already gone wrong
-
-**Deleting things.** An agent read `SRE module mismatch` as "stale packages" and
-ran `rm -rf /usr/local/lib/python3.11` — which was site-packages, containing the
-only copy of `clearml`. It half-worked: the interpreter recovered, so the error
-became a plausible *no module named pip* and the damage was invisible. The
-session lost its shell and was destroyed. **Never remove a system path to fix an
-import.**
-
-**A "fix" that reports success.** The replacement was a setup script ending
-`echo "venv ready: $(...python -V)"`. The venv creation had already failed —
-3.13 has no `ensurepip` — but the version string still printed, because the
-binary existed inside a half-built venv. A check that cannot fail is not a
-check. **Verify the thing you actually need** (`import clearml`), not a proxy
-for it.
-
----
-
-## Verified or inferred — say which
-
-When you report what a server can do, **label every claim**. Observed live on the
-first real bring-up: an agent whose Python was broken, so it could execute
-nothing at all, reported three confident green ticks — including
-"HyperDatasets: YES, server is Enterprise-grade". Its evidence was that
-`hyperdataset.py` *calls* the `datasets.*` endpoints.
-
-That is not evidence. **Our code calling an API says nothing about whether this
-server implements it.** The same run asserted "stages do have `/cache` mounted
-(pod volumes)" about a server it had never run a task on — reading this
-repository's local arrangement as a universal fact.
-
-So:
-
-- **Verified** = you called it and saw the response. `datasets.get_all_ex`
-  returning 200 verifies HyperDatasets; reading a file that mentions them does
-  not.
-- **Inferred** = you reasoned from config, docs or code. Legitimate, and it must
-  be labelled as such.
-- **Unknown** = you could not check. Say so, and say why.
-
-If you cannot run code at all, that is the **headline**, not a footnote. A
-report full of ticks from an agent that executed nothing is worse than no
-report, because someone will act on it.
-
-Before the first real stage, run the parity probe once. It launches a
-throwaway task on the `gpu` role and reports what a task actually gets: a GPU,
-`/dev/shm`, the shared path, the user id, and whether the NGC and Hugging Face
-credentials arrived (values never printed):
-
-```bash
-<python> probe_parity.py
-```
-
-Minimum to actually verify, once Python works:
-
-```python
-deft.queues()                    # real queue names, from the server
-deft.gap()                       # proves datasets.* exists AND you can read it
-python launch.py --help          # proves the harness imports
-```
-
----
-
-## Launch stages, do not call them
-
-`gap()` and `history()` are yours to call directly — they are plain API reads
-and work from anywhere.
-
-**Everything else must be launched as a task**, with `launch.py`:
-
-```bash
-python launch.py generate --gap bridge:52,excess_solder:44 --run-id myrun-r1
-python launch.py evaluate --run-dir /cache/results/pcb-uc1/runs/myrun-r1
-python launch.py improve  --run-dir /cache/results/pcb-uc1/runs/myrun-r1 --search-rounds 1
-python launch.py publish  --run-dir /cache/results/pcb-uc1/runs/myrun-r1/searched --run-id myrun-r1
-python launch.py train    --name inspector-round1
-```
-
-The reason is not style. **`/cache` is the task pod's volume.** Wherever you are
-running — a Claude Code session, a workbench, a laptop — you almost certainly do
-not have it. Call a stage in-process from there and it fails with
-
-```
-no SDG_result.csv under /cache/results/... -- run generation first
-```
-
-which reads like generation never happened. It did; you just cannot see its
-output from where you are standing. The in-process functions in `deft.py` exist
-for code already running *inside* a task, which is how `run_rounds.py` uses
-them.
-
-One consequence worth knowing: **a stage that touches the shared cache has to
-run where the cache is mounted**, even if it needs no GPU. That is why
-`launch.py` sends publish to the `gpu` role by default: on many clusters only
-the GPU workers mount the shared volume. If your CPU workers mount it too,
-`--queue` moves it.
-
----
-
-## The operations — MCP first
-
-**You have no GPU and you never will.** This session is a control plane: you
-drive the platform and you enqueue work. Every stage that touches a GPU or the
-shared cache runs as a task on a queue. That is the design, not a limitation to
-work around — it is also why an agent driving this loop cannot exceed the
-permissions of whoever launched it.
-
-**Your MCP tools come with the session.** The platform's Claude Code app
-configures its MCP server for you (`claude mcp list` shows it). If it fails to
-connect, report the server name, the URL it points at and the error, and stop.
-Do not repoint or re-add it yourself, and do not fall back to driving the
-platform from Python: a person decides that.
-
-**Use your platform MCP tools for everything they cover.** (The app may name the server `clearml` or `klique`; it is the same platform.) They are the native
-way to drive this platform, and the actions land on the platform's own record
-rather than in your shell scrollback:
-
-| What you need | How |
+| Argument | Meaning |
 |---|---|
-| What queues exist, and which workers serve them | MCP — list queues / list workers |
-| Launch a stage | `launch.py <stage> --dry-run` with this run's arguments, then MCP — enqueue the draft |
-| Watch a running stage | MCP — read task logs, read task metrics |
-| What ran, what it scored | MCP — list tasks, get task metrics, compare runs |
-| Which models exist and what made them | MCP — list models |
-| Bring up a serving endpoint | MCP — launch app instance |
+| `n=48` | How many images to generate. Default 24. |
+| `gap=bridge:52,excess_solder:44` | Allocate against this shortfall instead of the one read from the dataset. |
+| `counts=IC+bridge:20,...` | The exact allocation by NVIDIA defect type. Wins over `gap`. The types are printed in any round's log. |
+| `search=1` | Run NVIDIA's parameter search with this many re-rolls, keep the best attempt per sample, and regenerate rejects. Each re-roll regenerates every sample, so it multiplies the round's cost. `search=0` regenerates rejects without searching. Leave it out to publish what passed first time. |
+| `threshold=0.65` | The score a frame must reach. Default is the batch median. |
+| `target=60` | The per-class target. |
+| `seed=1` | Generation seed. Change it between rounds. |
 
-Do not shell out to Python for any of the above. Older versions of this repository
-wrapped all of it in `launch.py` and `deft.py` helpers; where an MCP tool
-exists it is the better path and the helper is legacy.
+Other stages exist for a larger GPU or a different model: `stage=finetune`
+(NVIDIA's few-shot fine-tune of the generator, needs more than 24 GB) and
+`stage=train_customer` (fine-tunes a Hugging Face ViT end to end as a stand-in
+for the user's own inspection model).
 
-### A draft per run, enqueued through the MCP
+Any stage accepts `cache=<path>`. If the workers have a volume that outlives a
+task, pass its path and the checkpoints (about 22 GB) download once. Without
+it every GPU task downloads them again, which is slower and not wrong.
 
-Three settings decide whether a stage runs at all, and each fails in a way that
-reads like a model bug rather than a config mistake: the agent must skip
-building a virtualenv (NVIDIA's image already carries torch and every
-dependency), the Xet transport must be disabled, and `clearml` has to be
-pip-installed in the setup script *because* the venv step is skipped.
+## The order
 
-`launch.py <stage> --dry-run` creates a **draft** task that carries all three,
-plus the container image, this repository and its commit, **and this run's own
-settings**: `--run-id`, `--gap`, `--num-sdg`, `--baseline`, `--name`. Those ride
-in the task's container environment. It launches nothing and spends no GPU, and
-it prints the draft's task id.
+1. `preflight` on the GPU queue. Do not continue past a failed preflight, and
+   do not work around what it reports. Tell the user what is missing.
+2. `status`. If nothing is published, `register`.
+3. `train baseline=1`, once, before any round. Without the control nothing
+   later can be compared with anything.
+4. Then, per round: `round`, read its result, `train`, compare with the
+   baseline, decide.
 
-**Why not clone a seed task and edit it?** Because the MCP's `clone_task` and
-`update_task` change a task's name, comment, tags and project, not its
-container environment. A clone of one seed always runs with that seed's run id,
-and from the second round `publish` sees the id as already published and adds
-nothing, with no error. (Found by an agent on its first blank-environment run.)
+## What is yours to decide
 
-So for every stage you run:
+- **How many images per round.** Rounds times batch has to cover the gap plus
+  what the gate rejects. If the budget cannot reach the target, say so at the
+  start rather than in the last round.
+- **Where the images go.** By default the allocation follows the shortfall.
+  Use `counts` when you have a better reason, such as a class the gate keeps
+  rejecting.
+- **Whether search is worth its cost** for this round.
+- **When to stop.** Stop when every class is at target, when a round publishes
+  nothing new, when the inspector stops improving, or when the budget is spent.
 
-1. create its draft with this run's arguments, for example
-   ```bash
-   <python> launch.py train --baseline --dry-run
-   <python> launch.py generate --gap bridge:52,excess_solder:44 --num-sdg 48 --run-id r1-<session> --dry-run
-   ```
-2. **enqueue that draft with the MCP** (`enqueue_task`) on the queue for its
-   role, then watch it with the MCP (status, logs, metrics) until it finishes.
+## Rules
 
-The MCP stays the path for launching and watching; `launch.py` only writes the
-task. Never build a stage task by hand through the MCP: it will be missing
-those three settings. If an environment provides ready-made drafts, enqueue
-those the same way.
-
-**Size the batch from the gap.** `--num-sdg` defaults to 24. Rounds times
-batch has to cover the gap plus what the gate rejects, so with a 96-image gap
-and a three-round budget each round needs well over 32. Say so if the budget
-cannot reach the target, rather than discovering it in round three.
-
-### The two things that are still Python
-
-| Call | Why it is not MCP |
-|---|---|
-| `deft.gap(target=60)` | The HyperDataset label counts — the question this whole method turns on. The MCP does not cover datasets; this reads them server-side in about a second, no pixels moved. |
-| The stage scripts themselves | NVIDIA's code, running inside NVIDIA's container on a GPU worker. You never *run* these; you enqueue a task that does. |
-
-`deft.py` also exposes in-process functions (`deft.generate(...)` and so on).
-**They are not for you.** They exist for code already running *inside* a task.
-Called from here they fail on a missing `/cache` with a message that reads like
-generation never happened.
-
-### The order that matters
-
-Whatever drives it, a round is: read the gap → allocate against it → generate →
-score → publish the survivors → measure. And **the control comes first**: train
-on real images only, once, before anything is generated. Without that number
-"the synthetic data helped" is not a claim anyone can check.
-
-## Rules you do not get to break
-
-These are not style preferences. Each one is a way the loop can start lying to
-itself, and every one has happened.
-
-1. **`run_id` must be unique per invocation.** Reuse one and `publish()` treats
-   the round as already published and adds nothing — no error, no frames, and a
-   round that looks like it worked. Scope it to your session.
-
-2. **A frame earns its label from the gate.** Never publish a generated frame
-   under its defect class because you expect it to be good. What the gate
-   rejects lands as `pending-review` and counts toward nothing. You are reading
-   these counts next round; if you inflate them you are deceiving yourself.
-
-3. **The real data is registered once.** If `v1-real` exists, reuse it. A second
-   copy doubles every count you reason over.
-
-4. **Bound your own spending.** Each search round regenerates every sample.
-   `--rounds 3 --search-rounds 2` is nine batches of generation, not three.
-   Decide a ceiling before you start and hold to it.
-
-5. **Report what you measured.** If the holdout cannot resolve the difference
-   between two rounds, say that. On NVIDIA's 86 sample images it cannot — 28
-   held-out images means accuracy moves in steps of 3.6%, and `bridge` has about
-   two examples in there. A flat line is not evidence of anything.
-
----
-
-## Judgement worth exercising
-
-The interesting decisions are not "how many" — that is arithmetic once you have
-the gap. They are:
-
-- **A class scoring badly.** `excess_solder` has come in around 0.52–0.66 while
-  `bridge` sits near 0.66. Is that the generator, the defect spec describing the
-  wrong thing, or a class that will not synthesise on this board? `improve()`
-  with a search is the cheap way to find out; giving up on the class and
-  spending the GPU on `bridge` is a legitimate answer too.
-- **Whether a search is worth it.** It costs a full regeneration per round. On
-  one batch a lower guidance helped; on another it made no difference. You will
-  not know in advance — but you can look at what the last one bought.
-- **When to stop.** At target, out of budget, or when a round adds nothing. If
-  the gap did not move, running the same generation again will not move it.
-
-`draws_for_round()` in `anomalygen_improve.py` is where per-sample generation
-parameters are chosen — NVIDIA documents that argument as "Claude-selected
-hyperparameters per sample", so they built it expecting you. It currently holds
-a two-point grid. Replacing it is fair game.
-
----
+- **The dataset must not claim more than it has.** A frame earns its defect
+  label only when the gate accepted it. The rest are published as
+  `pending-review` and count toward nothing. Do not lower the threshold to hit
+  a target.
+- **Do not guess a queue.** A queue nobody serves accepts a task and holds it
+  forever. If you were not told which queue to use, list them and ask.
+- **Credentials never go on a task.** Not in the comment, the name or the
+  container settings. They come from the platform's secret store. Preflight
+  reports whether they arrived without printing them.
+- **Say what you verified.** Label claims VERIFIED (you called it and saw the
+  response), INFERRED or UNKNOWN. Reading this repository is not evidence
+  about the server.
+- **Report the measurement as measured.** The held-out set is small (about 28
+  real images), so one image moves accuracy by several points. Say that when
+  you compare models.
 
 ## When something fails
 
-- `no per_sample.csv` → you called `improve()` before `score()`.
-- `A dataset version with the provided name already exists` → the real data is
-  already registered. That means "done", not "pick another name".
-- `0 free` missing from the mask-placement line → the CAD did not reach the
-  container and the defects landed in arbitrary places. **Stop.** The images are
-  worthless and nothing else will tell you.
-- `asked N got fewer` → usually legitimate. Automatic Mask Placement can only
-  put a defect where the CAD says that fault can occur. Check the AMP log for
-  `ok < requested` before treating it as a bug.
+Read the end of the task's log, then `TRAPS.md`: most failures in NVIDIA's
+pipeline have happened before and look like a different problem than they are.
+If the cause is the environment (a credential, a licence not accepted, no GPU
+memory, no disk), stop and tell the user. Do not retry the same task unchanged.
 
-`SKILL.md` has the full list, including the ones that cost a GPU hour.
+## At the end
 
----
-
-## What you should have at the end
-
-A published dataset version per round, a registered model per round plus a
-real-only baseline, and a short account of what you decided and why — including
-the decisions that did not pay off. The platform already recorded what ran; what
-it cannot record is your reasoning, and that is the part a person reading this
-tomorrow will want.
+Tell the user what you decided in each round and why, including what did not
+pay off: the versions published and what each added, the models trained and
+their accuracy against the control, and what is still short.

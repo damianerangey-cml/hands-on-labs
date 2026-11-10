@@ -344,11 +344,3 @@ def anomalygen_improve(dataset_name="pcb-uc1",
             "won": won,
             "median_before": statistics.median(before.values()) if before else None,
             "median_after": statistics.median(final.values()) if final else None}
-
-
-if __name__ == "__main__":
-    import anomalygen_evaluate as ev
-    _rd = os.environ.get("DEFT_RUN_DIR") or ev._latest_run(
-        os.environ.get("DEFT_DATASET") or "pcb-uc1")
-    anomalygen_improve(run_dir=_rd,
-                       rounds=int(os.environ.get("DEFT_SEARCH_ROUNDS") or 2))

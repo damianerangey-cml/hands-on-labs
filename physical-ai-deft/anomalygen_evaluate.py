@@ -170,16 +170,3 @@ def anomalygen_evaluate(dataset_name="pcb-uc1",
             "accepted": [r.get("path") for r in accepted],
             "rejected": [r.get("path") for r in rejected],
             "counts": {t: len(v) for t, v in by_type.items()}}
-
-
-if __name__ == "__main__":
-    thr = None
-    if "--nn-threshold" in sys.argv:
-        thr = float(sys.argv[sys.argv.index("--nn-threshold") + 1])
-    elif os.environ.get("DEFT_NN_THRESHOLD"):
-        thr = float(os.environ["DEFT_NN_THRESHOLD"])
-    # DEFT_RUN_DIR names the generation run to score, same as the improve stage.
-    # Without it the most recent run is scored, which is right interactively and
-    # wrong the moment two rounds are in flight.
-    anomalygen_evaluate(nn_threshold=thr,
-                        run_dir=os.environ.get("DEFT_RUN_DIR") or None)

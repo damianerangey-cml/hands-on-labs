@@ -35,7 +35,7 @@ import json
 import os
 
 from ag_common import bind_task, CACHE, ensure_dataset
-from train_inspector import _collect, _run_dirs
+from train_inspector import collect
 
 HF_MODEL = os.environ.get("DEFT_CUSTOMER_MODEL", "google/vit-base-patch16-224-in21k")
 EPOCHS = int(os.environ.get("DEFT_EPOCHS", "8"))
@@ -45,8 +45,7 @@ BATCH = int(os.environ.get("DEFT_BATCH", "16"))
 
 def train_customer(hyperdataset_name="PCB Inspection",
                    dataset_name="pcb-uc1",
-                   model_name=None,
-                   accepted_only=True):
+                   model_name=None):
     import numpy as np
     import torch
     from PIL import Image
@@ -60,7 +59,6 @@ def train_customer(hyperdataset_name="PCB Inspection",
 
     task = bind_task()
     dataset_dir = ensure_dataset(dataset_name)
-    results_dirs = _run_dirs(dataset_name)
 
     ds_id = hd.get_or_create_dataset(hyperdataset_name)
     version = hd.latest_published(ds_id)
@@ -70,12 +68,12 @@ def train_customer(hyperdataset_name="PCB Inspection",
     print("training against %s (%s)" % (version.get("name"), version["id"]), flush=True)
     print("  version holds:", counts, flush=True)
 
-    items, thr = _collect(dataset_dir, results_dirs, accepted_only)
+    items = collect(dataset_dir, ds_id, version["id"])
     if len(items) < 10:
         raise SystemExit("only %d training images -- nothing to learn from" % len(items))
     n_syn = sum(1 for _, _, o in items if o == "synthetic")
-    print("  %d images (%d real, %d synthetic accepted at nn>=%.3f)"
-          % (len(items), len(items) - n_syn, n_syn, thr or 0), flush=True)
+    print("  %d images (%d real, %d synthetic accepted by the gate)"
+          % (len(items), len(items) - n_syn, n_syn), flush=True)
 
     classes = sorted({c for _, c, _ in items})
     id2label = dict(enumerate(classes))
@@ -205,7 +203,6 @@ def train_customer(hyperdataset_name="PCB Inspection",
             "label_counts_at_version": counts,
             "training_images": len(train_idx),
             "synthetic_accepted": int(len(syn_idx)),
-            "nn_threshold": thr,
             "holdout_accuracy": float(acc),
             "kpi_overkill_at_full_recall": kpi,
             "epochs": EPOCHS,
@@ -218,10 +215,3 @@ def train_customer(hyperdataset_name="PCB Inspection",
 
     return {"model": name, "base": HF_MODEL, "accuracy": float(acc),
             "version_name": version.get("name"), "version_id": version["id"]}
-
-
-if __name__ == "__main__":
-    print(json.dumps(train_customer(
-        hyperdataset_name=os.environ.get("DEFT_HYPERDATASET", "PCB Inspection"),
-        dataset_name=os.environ.get("DEFT_DATASET", "pcb-uc1"),
-        model_name=os.environ.get("DEFT_MODEL_NAME")), indent=2))

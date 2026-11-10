@@ -26,55 +26,31 @@ import sys
 # bare "No such file or directory" that says nothing about why.
 REPO_ROOT = os.environ.get("DEFT_AG_REPO_ROOT", "/workspace/paidf-anomalygen")
 def _resolve_cache():
-    """The shared cache, or a writable fallback -- announced, never silent.
+    """Where this task keeps NVIDIA's checkpoints and its working files.
 
-    Every stage keeps NVIDIA's ~22 GB of checkpoints and its generated frames
-    here, and stages hand work to each other through it. On Kubernetes that is
-    a PVC mounted at /cache on every task pod. On an autoscaler VM worker there
-    may be no such volume, and the task -- running as uid 10000 -- cannot even
-    create /cache at the filesystem root:
-
-        PermissionError: [Errno 13] Permission denied: '/cache'
-
-    Falling back silently would be worse than crashing: the checkpoints would
-    re-download every stage, and the frames one stage generates would not exist
-    for the next, which surfaces later as "no SDG_result.csv" and reads like
-    generation never ran. So fall back, but say exactly what it costs.
+    Nothing is handed between tasks through this directory: a round generates,
+    scores and publishes inside one task, and training reads its frames from
+    the published dataset version. So the cache is only a speed-up. Point
+    DEFT_CACHE (or the `cache=` argument) at a path that persists across tasks
+    and the ~22 GB of checkpoints download once; leave it unset and each task
+    downloads them again into its own scratch space.
     """
-    want = os.environ.get("DEFT_CACHE") or "/cache"
-    try:
-        os.makedirs(want, exist_ok=True)
-        probe = os.path.join(want, ".deft-write-probe")
-        with open(probe, "w") as fh:
-            fh.write("x")
-        os.remove(probe)
-        return want
-    except OSError as e:
-        fallback = "/tmp/deft-cache"
-        os.makedirs(fallback, exist_ok=True)
-        print("=" * 70, flush=True)
-        print("NO SHARED CACHE AT %s (%s)" % (want, e.__class__.__name__), flush=True)
-        print("Falling back to %s, which lives INSIDE this container." % fallback,
-              flush=True)
-        print("", flush=True)
-        print("  * NVIDIA's ~22 GB of checkpoints will download again for EVERY", flush=True)
-        print("    stage, because nothing here survives the container.", flush=True)
-        print("  * frames this stage generates will NOT be visible to the next", flush=True)
-        print("    one, so a later stage may fail with 'no SDG_result.csv' --", flush=True)
-        print("    which reads as if generation never ran.", flush=True)
-        print("", flush=True)
-        print("IF THIS IS A SINGLE-TASK RUN (run_rounds.py), none of the above", flush=True)
-        print("applies -- one container holds the cache from start to finish, so", flush=True)
-        print("the fallback is correct and you can carry on.", flush=True)
-        print("", flush=True)
-        print("A multi-STAGE run needs shared, writable storage at %s:" % want, flush=True)
-        print("  Kubernetes  - a PVC mounted on every task pod", flush=True)
-        print("  VM worker   - a host path bind-mounted into the container, or", flush=True)
-        print("                run the whole loop as ONE task so one container", flush=True)
-        print("                holds the cache start to finish", flush=True)
-        print("Set DEFT_CACHE if your shared volume is somewhere else.", flush=True)
-        print("=" * 70, flush=True)
-        return fallback
+    want = os.environ.get("DEFT_CACHE")
+    for path in ([want] if want else []) + ["/tmp/deft-cache"]:
+        try:
+            os.makedirs(path, exist_ok=True)
+            probe = os.path.join(path, ".deft-write-probe")
+            with open(probe, "w") as fh:
+                fh.write("x")
+            os.remove(probe)
+            if want and path != want:
+                print("DEFT_CACHE=%s is not writable; using %s for this task"
+                      % (want, path), flush=True)
+            return path
+        except OSError:
+            continue
+    raise SystemExit("no writable cache directory (tried %s and /tmp/deft-cache)"
+                     % (want or "no DEFT_CACHE"))
 
 
 CACHE = _resolve_cache()
@@ -177,7 +153,7 @@ def bind_task():
     """The running ClearML task, bound EXPLICITLY -- or None outside a task.
 
     Every stage used a bare `Task.current_task()`, which happens to be set
-    when the agent bootstraps a launch.py-created task and is None on a task
+    when the agent bootstraps an SDK-created task and is None on a task
     created any other way -- including `tasks.clone` over the API. A cloned
     stage then does all its work and silently reports nothing: no scalars, no
     debug samples, no registered model. The work succeeded, the record lied

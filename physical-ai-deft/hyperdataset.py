@@ -365,3 +365,31 @@ def upload_image(local_path: str, dest_folder: str) -> str:
     name = os.path.basename(local_path)
     return StorageManager.upload_file(
         local_file=local_path, remote_url="%s/%s" % (dest_folder.rstrip("/"), name))
+
+
+def frames(dataset_id: str, version_id: str, max_count: int = 10000) -> list[dict]:
+    """Every frame in a version as {id, uri, meta}. Metadata only, no pixels.
+
+    Two calls: `datasets.get_sources` maps each source URI to its frame id, and
+    `frames.get_by_ids` returns the metadata for those ids. This is what lets a
+    training task read "the frames this version accepted" from the platform
+    instead of from a directory another task happened to leave behind.
+    """
+    src = _call("get_sources", {"dataset": dataset_id, "version": version_id,
+                                "max_count": max_count}).get("sources") or {}
+    uri_of = {fid: uri for uri, fid in src.items()}
+    ids, out = list(uri_of), []
+    for i in range(0, len(ids), 200):
+        got = _call("get_by_ids",
+                    {"dataset": dataset_id, "version": version_id,
+                     "frame_ids": ids[i:i + 200], "projection": ["id", "meta"]},
+                    service="frames").get("frames") or []
+        out += [{"id": f["id"], "uri": uri_of.get(f["id"]),
+                 "meta": f.get("meta") or {}} for f in got]
+    return out
+
+
+def local_copy(uri: str) -> str | None:
+    """Download one frame's image and return its local path."""
+    from clearml.storage import StorageManager
+    return StorageManager.get_local_copy(uri)
