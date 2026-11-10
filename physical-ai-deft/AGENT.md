@@ -70,7 +70,8 @@ it every GPU task downloads them again, which is slower and not wrong.
 1. `preflight` on the GPU queue. **If your preflight fails, stop and tell the
    user why.** Do not continue, do not work around what it reports, and do not
    substitute the result of any other preflight, however recent: only the one
-   you just ran counts.
+   you just ran counts. The GPU stages enforce this: each one refuses to run
+   unless a preflight passed on the same queue in the last 24 hours.
 2. `status`. If nothing is published, `register`.
 3. `train baseline=1`, once, before any round. Without the control nothing
    later can be compared with anything.

@@ -221,6 +221,52 @@ def read_status(target=60):
 
 
 # --------------------------------------------------------------------------
+# the gate
+# --------------------------------------------------------------------------
+GATED_STAGES = {"round", "train", "train_customer", "finetune"}
+PREFLIGHT_HOURS = 24
+
+
+def require_preflight():
+    """Refuse to run a GPU stage on a queue no preflight has passed on.
+
+    AGENT.md says to stop on a failed preflight, and an agent once read that,
+    watched its preflight fail, found an older passing result from a different
+    worker and carried on. A rule in a document is advice. This is the rule in
+    code: a GPU stage looks for a preflight that completed with ready=true on
+    THE SAME QUEUE in the last 24 hours, and exits if there is none.
+    """
+    task_id = os.environ.get("CLEARML_TASK_ID")
+    if not task_id:
+        return                      # not running as a task: nothing to gate
+    import datetime
+    from clearml.backend_api.session.client import APIClient
+    client = APIClient()
+    me = client.tasks.get_by_id(task=task_id)
+    queue = getattr(getattr(me, "execution", None), "queue", None)
+    if not queue:
+        return                      # started outside a queue; nothing to compare
+    since = (datetime.datetime.utcnow()
+             - datetime.timedelta(hours=PREFLIGHT_HOURS)).strftime("%Y-%m-%dT%H:%M:%S")
+    done = client.tasks.get_all(
+        project=[me.project], status=["completed"],
+        status_changed=[">=" + since], order_by=["-status_changed"],
+        only_fields=["id", "comment", "execution.queue"], page_size=500)
+    for t in done:
+        comment = t.comment or ""
+        if (getattr(getattr(t, "execution", None), "queue", None) == queue
+                and comment.lstrip().startswith("stage=preflight")
+                and '"ready": true' in comment):
+            print("preflight %s passed on this queue" % t.id, flush=True)
+            return
+    raise SystemExit(
+        "NO PASSING PREFLIGHT ON THIS QUEUE in the last %d hours, so this stage "
+        "will not run.\nRun stage=preflight on the same queue first. If it "
+        "fails, fix what it reports; a preflight that passed on another queue "
+        "says nothing about this one." % PREFLIGHT_HOURS)
+
+
+# --------------------------------------------------------------------------
 # stages
 # --------------------------------------------------------------------------
 def stage_template(args):
@@ -496,6 +542,8 @@ def main():
             % (", ".join(STAGES), args or None))
     if args.get("cache"):
         os.environ["DEFT_CACHE"] = args["cache"]
+    if stage in GATED_STAGES and not os.environ.get("DEFT_REEXEC"):
+        require_preflight()
     if stage in HEAVY:
         reexec_under_image_python(args)
 
