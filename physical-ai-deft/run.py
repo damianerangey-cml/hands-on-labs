@@ -67,21 +67,34 @@ GATED = ("nvidia/Cosmos-Predict2-2B-Text2Image", "nvidia/Cosmos-Guardrail1")
 
 
 _HF_PROBE = r"""
-import json, sys, tempfile
-from huggingface_hub import HfApi, hf_hub_download
+import json, os, sys, tempfile
+import huggingface_hub
+from huggingface_hub import HfApi, hf_hub_download, hf_hub_url, get_hf_file_metadata
+
+def why(e):
+    chain = []
+    while e is not None and len(chain) < 4:
+        chain.append("%s: %s" % (type(e).__name__, " ".join(str(e).split())[:260]))
+        e = e.__cause__ or e.__context__
+    return " <- ".join(chain)
+
 out = {}
 for repo in sys.argv[1:]:
     try:
-        files = [s.rfilename for s in HfApi().model_info(repo).siblings]
-        small = next((f for f in files if f.lower().endswith((".md", ".txt", ".json"))), files[0])
+        info = HfApi().model_info(repo, files_metadata=True)
+        files = sorted(info.siblings, key=lambda s: s.size or 0)
+        small = next((f.rfilename for f in files if f.rfilename.lower().endswith((".md", ".txt", ".json"))), files[0].rfilename)
         hf_hub_download(repo, small, force_download=True, local_dir=tempfile.mkdtemp())
+        # The weights are served from a different host than the small files,
+        # so check the largest file can be reached as well (headers only).
+        big = files[-1].rfilename
+        get_hf_file_metadata(hf_hub_url(repo, big))
         out[repo] = "ok"
     except Exception as e:
-        chain = []
-        while e is not None and len(chain) < 4:
-            chain.append("%s: %s" % (type(e).__name__, " ".join(str(e).split())[:260]))
-            e = e.__cause__ or e.__context__
-        out[repo] = " <- ".join(chain)
+        out[repo] = why(e)
+print("HFENV " + json.dumps({"huggingface_hub": huggingface_hub.__version__,
+      **{k: v for k, v in os.environ.items()
+         if k.startswith(("HF_", "HUGGINGFACE_")) and "TOKEN" not in k}}))
 print("HFCHECK " + json.dumps(out))
 """
 
@@ -397,6 +410,8 @@ def stage_preflight(args):
         for line in probe.stdout.splitlines():
             if line.startswith("HFCHECK "):
                 access = json.loads(line[8:])
+            elif line.startswith("HFENV "):
+                facts["hf_env"] = json.loads(line[6:])
         if not access:
             access = {r: "probe failed: %s" % (probe.stderr or probe.stdout)[-300:]
                       for r in GATED}
