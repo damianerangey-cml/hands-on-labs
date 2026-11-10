@@ -92,7 +92,11 @@ for repo in sys.argv[1:]:
         out[repo] = "ok"
     except Exception as e:
         out[repo] = why(e)
-print("HFENV " + json.dumps({"huggingface_hub": huggingface_hub.__version__,
+try:
+    account = HfApi().whoami().get("name")
+except Exception as e:
+    account = "unknown (%s)" % why(e)
+print("HFENV " + json.dumps({"account": account, "huggingface_hub": huggingface_hub.__version__,
       **{k: v for k, v in os.environ.items()
          if k.startswith(("HF_", "HUGGINGFACE_")) and "TOKEN" not in k}}))
 print("HFCHECK " + json.dumps(out))
