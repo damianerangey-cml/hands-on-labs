@@ -32,6 +32,11 @@ When the task ends, its comment has a second line, `RESULT {...}`, with
 everything the stage measured. Read it from the task rather than the log. Read
 the log when a task fails. Never enqueue the template itself.
 
+**While a task runs, check its status every two minutes.** Do not arm one long
+wait and sit on it: a stage can finish in a few minutes or take half an hour,
+and a long wait only reports when it expires. Poll the task's status, and act
+as soon as it is `completed` or `failed`.
+
 ## The stages
 
 | Comment | What it does | Needs |
