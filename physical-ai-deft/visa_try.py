@@ -151,9 +151,9 @@ def visa_try(n=16, seed=1, model_size="2b", step=RELEASED_STEP):
         mask_path = os.path.join(work, "%02d_%s_mask.png" % (i, b))
         real_path = os.path.join(work, "%02d_%s_real.png" % (i, b))
         g.save(img_path)
-        # NVIDIA's own masks hold small integers (one per defect instance),
-        # not 0/255, so write ours the same way.
-        Image.fromarray(m.astype("uint8")).convert(mode).save(mask_path)
+        # White on black. A mask written as small integers is read as empty
+        # ("No valid mask found") and the generator then crashes.
+        Image.fromarray((m * 255).astype("uint8")).save(mask_path)
         real = Image.open(bad_img).convert("RGB")
         real.crop(box).resize((512, 512), Image.LANCZOS).save(real_path)
         bad_img = real_path
