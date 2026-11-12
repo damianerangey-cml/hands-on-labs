@@ -27,7 +27,10 @@ and enqueue it on the CPU queue. Its result gives you the template's task id.
 
 **Every stage after that is the same three calls:**
 
-1. **Clone the template**, with a name that says what this run is for.
+1. **Clone the template**, and name the clone as below. The names are short
+   on purpose: they are the legend when tasks are compared side by side.
+   - arrivals: `Day 1 - boards arrive`, then `Round 2 - boards arrive`, ...
+   - training: `inspector v1`, `inspector v2`, ... (the version it trains on)
 2. **Set the clone's comment** to one line of arguments, starting with `stage=`.
 3. **Enqueue the clone** on the GPU queue, and watch it.
 
@@ -54,6 +57,25 @@ Arguments, all optional:
 | `line_arrive` | `review=60` | How many of them are sent for review and labelled. Review is the costly part: a person looks at each one. |
 | `line_arrive` | `start=40` | Day one only: how many boards the line has produced so far. |
 | `line_train` | `steps=150` | How long to fine-tune. |
+
+## What every task records
+
+Each stage records its own evidence, and lists it under `recorded` in its
+result:
+
+- **A dataview.** The task's DATAVIEWS tab names the dataset version it
+  published (`line_arrive`) or trained on (`line_train`).
+- **Debug samples.** `line_arrive`: the boards labelled this round, with what
+  the inspector said about each. `line_train`: defects caught, defects missed
+  and false alarms on the exam.
+- **Scalars.** `line_train`: the training loss, the exam numbers during
+  training, and one chart of every inspector so far by dataset version.
+- **Plots.** The inspector's scores on the arriving boards and on the exam, the
+  exam confusion matrix, defects caught by board type, and the table of every
+  inspector so far.
+
+**After each task, check `recorded` is there and names a dataview.** If it is
+missing, say so in your report for that round; do not rerun the task for it.
 
 ## The exam
 

@@ -185,11 +185,13 @@ def line_arrive(arrive=300, review=60, start=40, seed=0, dataset=DATASET):
                              inspector_score=(None if probs is None else round(float(probs_pick[j]), 4)))
         out.append(hd.make_frame(hd.upload_image(small, dest),
                                  labels=["defective" if label else "good"], meta=meta,
-                                 content_type="image/jpeg"))
-        if task and j < 8:
-            task.get_logger().report_image(title="reviewed boards",
-                                           series="%02d %s" % (j, "defective" if label else "good"),
-                                           iteration=0, local_path=small)
+                                 content_type="image/jpeg", source_id="top"))
+        if task and j < 16:
+            task.get_logger().report_image(
+                title="boards labelled this round",
+                series="%02d %s %s%s" % (j, board, "DEFECTIVE" if label else "good",
+                                         "" if probs is None else "  inspector said %.2f" % probs_pick[j]),
+                iteration=0, local_path=small)
     hd.add_frames(vid, out)
     hd.commit(vid, publish=True)
     counts = hd.stats(vid)["labels"]
@@ -197,7 +199,40 @@ def line_arrive(arrive=300, review=60, start=40, seed=0, dataset=DATASET):
     print(note, flush=True)
     print("published %s: %s" % (name, counts), flush=True)
     print("=" * 66, flush=True)
-    return {"version": name, "arrived": int(len(batch)), "reviewed": int(len(pick)),
+    recorded = {}
+    if task:
+        logger = task.get_logger()
+        for k, v in (("boards arrived", len(batch)), ("boards reviewed", len(pick)),
+                     ("defects found in review", int(y[pick].sum())),
+                     ("boards labelled so far", sum(counts.values())),
+                     ("defective boards labelled so far", counts.get("defective", 0))):
+            logger.report_single_value(k, v)
+        if probs is not None:
+            # What the current inspector made of the whole batch, and which
+            # part of it went to review.
+            edges = np.linspace(0, 1, 21)
+            logger.report_histogram(
+                title="inspector score on the arriving boards", series="all arrivals",
+                values=np.histogram(probs, bins=edges)[0], iteration=0,
+                xlabels=["%.2f" % e for e in edges[:-1]], xaxis="probability defective",
+                yaxis="boards")
+            logger.report_histogram(
+                title="inspector score on the arriving boards", series="sent for review",
+                values=np.histogram(probs_pick, bins=edges)[0], iteration=0,
+                xlabels=["%.2f" % e for e in edges[:-1]], xaxis="probability defective",
+                yaxis="boards")
+        logger.report_table(
+            title="dataset version", series=name, iteration=0,
+            table_plot=[["label", "boards"]] + [[k, v] for k, v in sorted(counts.items())])
+        task.flush(wait_for_uploads=True)
+        recorded = {"dataview": hd.attach_dataview(
+                        task.id, ds_id, vid, "%s %s" % (dataset, name),
+                        "the dataset version this task published",
+                        {"good": 0, "defective": 1}),
+                    "debug_samples": min(16, len(pick)),
+                    "plots": ["dataset version"] + (["inspector score on the arriving boards"]
+                                                    if probs is not None else [])}
+    return {"version": name, "recorded": recorded, "arrived": int(len(batch)), "reviewed": int(len(pick)),
             "defects_in_review": int(y[pick].sum()),
             "defects_in_batch": int(y[batch].sum()),
             "flagged_by_inspector": None if probs is None else int((probs > 0.5).sum()),
@@ -249,6 +284,9 @@ def line_train(steps=150, lr=1e-4, dataset=DATASET):
                 "false_alarms": round(float(pred[t == 0].mean()), 3)}
 
     before = score(net) if previous else None
+    if task and before:
+        for k, v in before.items():
+            task.get_logger().report_scalar("exam during training", k.replace("_", " "), v, 0)
 
     Xt = _tensors(items, labelled)
     yt = torch.tensor(y[labelled])
@@ -276,8 +314,18 @@ def line_train(steps=150, lr=1e-4, dataset=DATASET):
         opt.step()
         if task and step % 10 == 0:
             task.get_logger().report_scalar("training", "loss", float(loss), step)
+        if task and (step + 1) % 50 == 0 and step + 1 < int(steps):
+            mid = score(net)
+            for k, v in mid.items():
+                task.get_logger().report_scalar("exam during training", k.replace("_", " "),
+                                                v, step + 1)
+            net.train()
 
     after = score(net)
+    if task:
+        for k, v in after.items():
+            task.get_logger().report_scalar("exam during training", k.replace("_", " "),
+                                            v, int(steps))
     result = dict(after, model=name, version=version.get("name"),
                   boards=int(len(labelled)), defects=int(y[labelled].sum()),
                   exam_boards=int(len(exam)), exam_defective=int(y[exam].sum()),
@@ -334,6 +382,56 @@ def line_train(steps=150, lr=1e-4, dataset=DATASET):
             + [[h.get("model"), h["version"], h.get("boards"), h.get("defects"),
                 "%.0f%%" % (100 * float(h["defects_caught"])),
                 "%.1f%%" % (100 * float(h["false_alarms"])), h["exam_score"]] for h in history])
+        # What the inspector got right and wrong on the exam, as pictures.
+        from PIL import Image
+        p_exam = _prob(net, Xe)
+        t_exam = y[exam]
+        show_dir = os.path.join(CACHE, "line", "exam-" + name)
+        os.makedirs(show_dir, exist_ok=True)
+        groups = (
+            ("defects caught", [i for i in np.argsort(-p_exam) if t_exam[i] == 1 and p_exam[i] > 0.5]),
+            ("defects missed", [i for i in np.argsort(p_exam) if t_exam[i] == 1 and p_exam[i] <= 0.5]),
+            ("false alarms", [i for i in np.argsort(-p_exam) if t_exam[i] == 0 and p_exam[i] > 0.5]))
+        shown = 0
+        for title, idxs in groups:
+            for j, i in enumerate(idxs[:6]):
+                path, board, _l = items[exam[i]]
+                small = os.path.join(show_dir, "%s_%02d.jpg" % (title.replace(" ", "_"), j))
+                Image.open(path).convert("RGB").resize((512, 512), Image.BILINEAR).save(small, quality=88)
+                logger.report_image(title=title, series="%02d %s  inspector said %.2f"
+                                    % (j, board, p_exam[i]), iteration=0, local_path=small)
+                shown += 1
+        edges = np.linspace(0, 1, 21)
+        for series, mask in (("good boards", t_exam == 0), ("defective boards", t_exam == 1)):
+            logger.report_histogram(
+                title="inspector score on the exam", series=series,
+                values=np.histogram(p_exam[mask], bins=edges)[0], iteration=0,
+                xlabels=["%.2f" % e for e in edges[:-1]], xaxis="probability defective",
+                yaxis="boards")
+        pred = p_exam > 0.5
+        logger.report_confusion_matrix(
+            title="exam confusion matrix", series=name, iteration=0,
+            matrix=[[int(((t_exam == a) & (pred == b)).sum()) for b in (0, 1)] for a in (0, 1)],
+            xlabels=["called good", "called defective"], ylabels=["good", "defective"],
+            xaxis="inspector", yaxis="truth")
+        exam_board = np.array([items[i][1] for i in exam])
+        logger.report_table(
+            title="defects caught by board type", series=name, iteration=0,
+            table_plot=[["board type", "defective on the exam", "caught", "share"]]
+            + [[b, int(((exam_board == b) & (t_exam == 1)).sum()),
+                int(((exam_board == b) & (t_exam == 1) & pred).sum()),
+                "%.0f%%" % (100.0 * ((exam_board == b) & (t_exam == 1) & pred).sum()
+                            / max(1, ((exam_board == b) & (t_exam == 1)).sum()))] for b in BOARDS])
+        task.flush(wait_for_uploads=True)
+        result["recorded"] = {
+            "dataview": hd.attach_dataview(
+                task.id, ds_id, version["id"], "%s %s" % (dataset, version.get("name")),
+                "the dataset version this inspector was trained on",
+                {"good": 0, "defective": 1}),
+            "debug_samples": shown,
+            "scalars": ["training", "exam during training", "inspector by dataset version"],
+            "plots": ["every inspector so far", "inspector score on the exam",
+                      "exam confusion matrix", "defects caught by board type"]}
         result["history"] = [{"version": h["version"], "defects_caught": h["defects_caught"],
                               "false_alarms": h["false_alarms"], "exam_score": h["exam_score"]}
                              for h in history]

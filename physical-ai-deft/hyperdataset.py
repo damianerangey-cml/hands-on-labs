@@ -80,7 +80,8 @@ def make_frame(uri: str,
                meta: dict | None = None,
                width: int | None = None,
                height: int | None = None,
-               content_type: str = "image/png") -> dict:
+               content_type: str = "image/png",
+               source_id: str = "top") -> dict:
     """One frame document: where the image is, what is in it, what we know.
 
     `labels` become an ROI. That matters more than it looks -- `get_stats`
@@ -98,7 +99,10 @@ def make_frame(uri: str,
     dataset should agree on keys and types, or the UI's filters get ragged. The
     keys this lab commits to are in `frame_meta()`.
     """
-    source = {"id": uuid.uuid4().hex[:16], "uri": uri,
+    # The source id names the VIEW of the part (top, bottom, x-ray), not the
+    # frame. It is what the UI's "preview source" filter lists, so every frame
+    # taken from the same view must share it.
+    source = {"id": source_id, "uri": uri,
               "content_type": content_type, "timestamp": 0}
     if width:
         source["width"] = width
@@ -393,3 +397,21 @@ def local_copy(uri: str) -> str | None:
     """Download one frame's image and return its local path."""
     from clearml.storage import StorageManager
     return StorageManager.get_local_copy(uri)
+
+
+def attach_dataview(task_id: str, dataset_id: str, version_id: str, name: str,
+                    description: str = "", labels: dict | None = None) -> str:
+    """Record on a task which dataset version it used, as a dataview.
+
+    This is what fills the task's DATAVIEWS tab, so anyone reading the task can
+    open the exact version it read or wrote. The rest of the task's execution
+    block is sent back unchanged, because the call replaces the whole block.
+    Call it as the last thing a stage does.
+    """
+    execution = _call("get_by_id", {"task": task_id}, service="tasks")["task"].get("execution") or {}
+    view = {"name": name, "description": description,
+            "versions": [{"dataset": dataset_id, "version": version_id}],
+            "labels_enumeration": dict(labels or {})}
+    _call("edit", {"task": task_id, "force": True,
+                   "execution": dict(execution, dataviews=[view])}, service="tasks")
+    return name
