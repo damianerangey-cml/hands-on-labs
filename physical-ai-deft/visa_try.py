@@ -117,7 +117,7 @@ def visa_try(n=16, seed=1, model_size="2b", step=RELEASED_STEP):
             their_mask.mode, their_mask.size, np.unique(np.array(their_mask))[:6]), flush=True)
 
     # ---- the testcase: a good board + the location of a real defect -----
-    work = os.path.join(CACHE, "visa_try", "seed%d" % seed)
+    work = os.path.join(CACHE, "visa_try", "closeup-seed%d" % seed)
     os.makedirs(work, exist_ok=True)
     rows, k = [], 0
     while len(rows) < n and k < n * 20:
@@ -132,11 +132,31 @@ def visa_try(n=16, seed=1, model_size="2b", step=RELEASED_STEP):
         frac = m.mean()
         if not (0.0003 < frac < 0.03):
             continue                       # too small to see or too big to be one defect
+        # NVIDIA's generator was trained on close-ups of single components
+        # (about 380 px across). Handing it a whole-board photo makes it work
+        # on a region a few dozen pixels wide, far from anything it has seen.
+        # So cut a close-up around the defect location and scale it to 512.
+        ys, xs = np.where(m)
+        cx, cy = int(xs.mean()), int(ys.mean())
+        half = int(max(128, 2.0 * max(xs.max() - xs.min(), ys.max() - ys.min()))) 
+        half = min(half, cx, cy, g.size[0] - cx, g.size[1] - cy)
+        if half < 64:
+            continue
+        box = (cx - half, cy - half, cx + half, cy + half)
+        g = g.crop(box).resize((512, 512), Image.LANCZOS)
+        m = np.array(Image.fromarray((m * 255).astype("uint8")).crop(box)
+                     .resize((512, 512), Image.NEAREST)) > 0
         i = len(rows)
         img_path = os.path.join(work, "%02d_%s_good.png" % (i, b))
         mask_path = os.path.join(work, "%02d_%s_mask.png" % (i, b))
+        real_path = os.path.join(work, "%02d_%s_real.png" % (i, b))
         g.save(img_path)
-        Image.fromarray((m * 255).astype("uint8")).convert(mode).save(mask_path)
+        # NVIDIA's own masks hold small integers (one per defect instance),
+        # not 0/255, so write ours the same way.
+        Image.fromarray(m.astype("uint8")).convert(mode).save(mask_path)
+        real = Image.open(bad_img).convert("RGB")
+        real.crop(box).resize((512, 512), Image.LANCZOS).save(real_path)
+        bad_img = real_path
         rows.append({
             "image_filename": img_path, "mask_filename": mask_path,
             "anomaly_type": types[i % len(types)],
@@ -185,11 +205,7 @@ def visa_try(n=16, seed=1, model_size="2b", step=RELEASED_STEP):
             continue
         made += 1
         g = Image.open(r["image_filename"])
-        m = np.array(Image.open(r["mask_filename"]).convert("L")) > 0
-        ys, xs = np.where(m)
-        cx, cy = int(xs.mean()), int(ys.mean())
-        half = int(max(160, 1.6 * max(xs.max() - xs.min(), ys.max() - ys.min())))
-        box = (max(0, cx - half), max(0, cy - half), min(g.size[0], cx + half), min(g.size[1], cy + half))
+        box = (0, 0) + g.size
         row = Image.new("RGB", (420 * 3 + 20, 420 + 30), "white")
         for j, p in enumerate((r["image_filename"], gen, r["_real"])):
             row.paste(crop(p, box, g.size), (j * 430, 30))
