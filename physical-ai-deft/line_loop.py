@@ -340,8 +340,14 @@ def line_train(steps=150, lr=1e-4, dataset=DATASET):
     out_dir = os.path.join(CACHE, "models", name)
     os.makedirs(out_dir, exist_ok=True)
     weights = os.path.join(out_dir, "model.pt")
+    # Saved through a buffer: the SDK registers every file torch.save writes as
+    # a model of its own, which would put two models per round in the list.
+    import io
+    buf = io.BytesIO()
     torch.save({"state_dict": net.state_dict(), "hf_model": BASE_MODEL,
-                "id2label": {0: "good", 1: "defective"}}, weights)
+                "id2label": {0: "good", 1: "defective"}}, buf)
+    with open(weights, "wb") as fh:
+        fh.write(buf.getvalue())
     if task:
         logger = task.get_logger()
         for k, v in after.items():
