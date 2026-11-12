@@ -42,10 +42,25 @@ def visa_try(n=16, seed=1, model_size="2b", step=RELEASED_STEP):
     visa = os.path.join(CACHE, "visa")
     os.makedirs(visa, exist_ok=True)
     if not _find(visa, "image_anno.csv"):
-        tar = os.path.join(visa, "visa.tar")
-        _run(["curl", "-sSfL", "-o", tar, VISA_URL], cwd=visa)
-        _run(["bash", "-c", "tar -tf visa.tar | head -5; tar -xf visa.tar --wildcards "
-              "'*pcb[1-4]/*' && rm visa.tar"], cwd=visa)
+        # No curl or wget in NVIDIA's image, so stream the archive in Python
+        # and unpack only the four PCB subsets as it arrives.
+        import re
+        import tarfile
+        import urllib.request
+        keep = re.compile(r"(^|/)pcb[1-4]/")
+        n_files = 0
+        with urllib.request.urlopen(VISA_URL) as resp:
+            with tarfile.open(fileobj=resp, mode="r|*") as tf:
+                for member in tf:
+                    if n_files < 3:
+                        print("archive entry:", member.name, flush=True)
+                    if member.isfile() and keep.search(member.name) and ".." not in member.name:
+                        dest = os.path.join(visa, member.name.lstrip("/"))
+                        os.makedirs(os.path.dirname(dest), exist_ok=True)
+                        with tf.extractfile(member) as src, open(dest, "wb") as out:
+                            out.write(src.read())
+                    n_files += 1
+        print("VisA archive read: %d entries" % n_files, flush=True)
     pairs = {}                       # board -> {"good": [...], "bad": [(image, mask)]}
     for b in BOARDS:
         anno = None
