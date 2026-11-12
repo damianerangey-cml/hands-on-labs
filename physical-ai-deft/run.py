@@ -47,7 +47,7 @@ UC = os.environ.get("DEFT_DATASET", "pcb-uc1")
 HOUSEKEEPING = {"clean", "mask", "pending-review"}
 
 # Stages that run NVIDIA's code and so need the image's own Python.
-HEAVY = {"register", "round", "train", "train_customer", "finetune"}
+HEAVY = {"register", "round", "train", "train_customer", "finetune", "visa_try"}
 STAGES = ("template", "preflight", "status") + tuple(sorted(HEAVY))
 
 IMAGE = os.environ.get("DEFT_IMAGE", "nvcr.io/nvidia/paidf-anomalygen:1.0.1")
@@ -260,7 +260,7 @@ def read_status(target=60):
 # --------------------------------------------------------------------------
 # the gate
 # --------------------------------------------------------------------------
-GATED_STAGES = {"round", "train", "train_customer", "finetune"}
+GATED_STAGES = {"round", "train", "train_customer", "finetune", "visa_try"}
 PREFLIGHT_HOURS = 24
 
 
@@ -552,6 +552,12 @@ def stage_train_customer(args):
         mode=mode, hf_model=args.get("model"),
         folds=int(args.get("folds", 4)), seeds=int(args.get("repeats", 3)),
         steps=int(args.get("steps", 150)), lr=args.get("lr"))
+
+
+def stage_visa_try(args):
+    """Experiment: paint NVIDIA's defect types onto good VisA boards."""
+    import visa_try
+    return visa_try.visa_try(n=int(args.get("n", 16)), seed=int(args.get("seed", 1)))
 
 
 def stage_finetune(args):
