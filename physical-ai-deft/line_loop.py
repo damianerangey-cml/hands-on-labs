@@ -303,4 +303,38 @@ def line_train(steps=150, lr=1e-4, dataset=DATASET):
         om.update_weights(weights_filename=weights, auto_delete_file=False,
                           upload_uri=Session.get_files_server_host())
         result["model_id"] = om.id
+        # The result travels with the model, so the project's model list shows
+        # every inspector beside what it scored.
+        for k in ("defects_caught", "false_alarms", "exam_score", "boards", "defects"):
+            om.set_metadata(k, str(result[k]))
+        om.set_metadata("dataset_version", str(result["version"]))
+
+        # One chart of every inspector so far, by dataset version. Each earlier
+        # result is read from its registered model, not from an earlier task.
+        from clearml import Model
+        rows = {}
+        for m in Model.query_models(project_name=task.get_project_name(), tags=[MODEL_TAG]) or []:
+            cfg = m.config_dict or {}
+            if cfg.get("version") and cfg.get("defects_caught") is not None:
+                rows[_version_no(cfg["version"])] = cfg
+        rows[_version_no(result["version"])] = result
+        history = [rows[k] for k in sorted(rows)]
+        for h in history:
+            n = _version_no(h["version"])
+            logger.report_scalar("inspector by dataset version", "defects caught",
+                                 float(h["defects_caught"]), n)
+            logger.report_scalar("inspector by dataset version", "false alarms",
+                                 float(h["false_alarms"]), n)
+            logger.report_scalar("inspector by dataset version", "exam score",
+                                 float(h["exam_score"]), n)
+        logger.report_table(
+            title="every inspector so far", series="exam results", iteration=0,
+            table_plot=[["model", "dataset version", "boards", "defects",
+                         "defects caught", "false alarms", "exam score"]]
+            + [[h.get("model"), h["version"], h.get("boards"), h.get("defects"),
+                "%.0f%%" % (100 * float(h["defects_caught"])),
+                "%.1f%%" % (100 * float(h["false_alarms"])), h["exam_score"]] for h in history])
+        result["history"] = [{"version": h["version"], "defects_caught": h["defects_caught"],
+                              "false_alarms": h["false_alarms"], "exam_score": h["exam_score"]}
+                             for h in history]
     return result
