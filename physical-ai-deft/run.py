@@ -47,7 +47,8 @@ UC = os.environ.get("DEFT_DATASET", "pcb-uc1")
 HOUSEKEEPING = {"clean", "mask", "pending-review"}
 
 # Stages that run NVIDIA's code and so need the image's own Python.
-HEAVY = {"register", "round", "train", "train_customer", "finetune", "visa_try", "seg_check", "line_check"}
+HEAVY = {"register", "round", "train", "train_customer", "finetune", "visa_try", "seg_check", "line_check",
+         "line_arrive", "line_train"}
 STAGES = ("template", "preflight", "status") + tuple(sorted(HEAVY))
 
 IMAGE = os.environ.get("DEFT_IMAGE", "nvcr.io/nvidia/paidf-anomalygen:1.0.1")
@@ -260,7 +261,8 @@ def read_status(target=60):
 # --------------------------------------------------------------------------
 # the gate
 # --------------------------------------------------------------------------
-GATED_STAGES = {"round", "train", "train_customer", "finetune", "visa_try", "seg_check", "line_check"}
+GATED_STAGES = {"round", "train", "train_customer", "finetune", "visa_try", "seg_check", "line_check",
+                "line_arrive", "line_train"}
 PREFLIGHT_HOURS = 24
 
 
@@ -577,6 +579,26 @@ def stage_line_check(args):
         seed=int(args.get("seed", 0)), repeats=int(args.get("repeats", 2)),
         rounds=int(args.get("rounds", 6)), start=int(args.get("start", 40)),
         steps=int(args.get("steps", 150)), hf_model=args.get("model") or "microsoft/resnet-18")
+
+
+def stage_line_arrive(args):
+    """The next batch of boards off the line, published as a dataset version.
+
+    The first call is day one (start=40 boards, all labelled). Later calls show
+    arrive=300 boards to the current inspector and send the review=60 it is
+    least sure about for labelling.
+    """
+    import line_loop
+    return line_loop.line_arrive(
+        arrive=int(args.get("arrive", 300)), review=int(args.get("review", 60)),
+        start=int(args.get("start", 40)), seed=int(args.get("seed", 0)))
+
+
+def stage_line_train(args):
+    """Fine-tune the inspector on the latest version, score it on the exam and
+    register it."""
+    import line_loop
+    return line_loop.line_train(steps=int(args.get("steps", 150)))
 
 
 def stage_finetune(args):
