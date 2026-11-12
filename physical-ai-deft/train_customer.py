@@ -47,7 +47,7 @@ DEFAULT_MODEL = "microsoft/resnet-18"
 
 def train_customer(hyperdataset_name="PCB Inspection", dataset_name="pcb-uc1",
                    model_name=None, mode="synthetic", hf_model=None,
-                   folds=4, seeds=3, epochs=10, lr=None, batch=16):
+                   folds=4, seeds=3, steps=150, lr=None, batch=16):
     import numpy as np
     import torch
     from PIL import Image
@@ -116,12 +116,16 @@ def train_customer(hyperdataset_name="PCB Inspection", dataset_name="pcb-uc1",
             hf_model, num_labels=len(classes), id2label=id2label, label2id=label2id,
             ignore_mismatched_sizes=True).to(dev)
         opt = torch.optim.AdamW(net.parameters(), lr=lr)
-        for _ in range(epochs):
-            net.train()
+        # EVERY ARM GETS THE SAME NUMBER OF UPDATES. Counting passes over the
+        # data instead would hand an arm with more images more training, and
+        # "more data helped" could not be told apart from "trained for longer".
+        done = 0
+        net.train()
+        while done < steps:
             order = rng.permutation(idx)
             for i in range(0, len(order), batch):
                 b = order[i:i + batch]
-                if len(b) < 2:
+                if len(b) < 2 or done >= steps:
                     continue
                 x = X[b].to(dev)
                 if rng.random() < 0.5:
@@ -131,6 +135,7 @@ def train_customer(hyperdataset_name="PCB Inspection", dataset_name="pcb-uc1",
                 opt.zero_grad()
                 net(pixel_values=x, labels=Y[b].to(dev)).loss.backward()
                 opt.step()
+                done += 1
         return net
 
     def predict(net, idx):
@@ -168,6 +173,7 @@ def train_customer(hyperdataset_name="PCB Inspection", dataset_name="pcb-uc1",
         "noise": round(float(scores.std(ddof=1)) if len(scores) > 1 else 0.0, 3),
         "scores": [round(float(v), 3) for v in scores],
         "accuracy": round(float(np.mean([r["accuracy"] for r in runs])), 3),
+        "accuracies": [round(r["accuracy"], 3) for r in runs],
         "recall": recall,
         "real_images_tested": int(len(real_idx)), "folds": folds, "repeats": int(seeds),
         "synthetic_accepted": int(len(syn_idx)) if mode == "synthetic" else 0,
@@ -195,7 +201,7 @@ def train_customer(hyperdataset_name="PCB Inspection", dataset_name="pcb-uc1",
             logger.report_single_value("recall " + c, r)
         om = OutputModel(task=task, name=name, framework="PyTorch")
         om.update_design(config_dict=dict(result, label_counts_at_version=counts,
-                                          epochs=int(epochs), lr=lr))
+                                          steps=int(steps), lr=lr))
         om.update_weights(weights_filename=weights, auto_delete_file=False,
                           upload_uri=Session.get_files_server_host())
     return result

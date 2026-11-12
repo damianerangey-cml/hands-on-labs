@@ -551,7 +551,7 @@ def stage_train_customer(args):
         hyperdataset_name=DATASET, dataset_name=UC, model_name=args.get("name"),
         mode=mode, hf_model=args.get("model"),
         folds=int(args.get("folds", 4)), seeds=int(args.get("repeats", 3)),
-        epochs=int(args.get("epochs", 10)), lr=args.get("lr"))
+        steps=int(args.get("steps", 150)), lr=args.get("lr"))
 
 
 def stage_finetune(args):
