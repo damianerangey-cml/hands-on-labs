@@ -538,9 +538,20 @@ def stage_train(args):
 
 
 def stage_train_customer(args):
+    """Fine-tune the customer's inspection model end to end and score it.
+
+    baseline=1 trains on real images only (the control); oversample=1 repeats
+    the rare real images instead of adding synthetic ones; otherwise it trains
+    on real plus the accepted synthetic frames.
+    """
     import train_customer
+    mode = ("real" if truthy(args.get("baseline"))
+            else "oversample" if truthy(args.get("oversample")) else "synthetic")
     return train_customer.train_customer(
-        hyperdataset_name=DATASET, dataset_name=UC, model_name=args.get("name"))
+        hyperdataset_name=DATASET, dataset_name=UC, model_name=args.get("name"),
+        mode=mode, hf_model=args.get("model"),
+        folds=int(args.get("folds", 4)), seeds=int(args.get("repeats", 3)),
+        epochs=int(args.get("epochs", 10)), lr=args.get("lr"))
 
 
 def stage_finetune(args):
