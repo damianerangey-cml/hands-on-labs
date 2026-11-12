@@ -47,7 +47,7 @@ UC = os.environ.get("DEFT_DATASET", "pcb-uc1")
 HOUSEKEEPING = {"clean", "mask", "pending-review"}
 
 # Stages that run NVIDIA's code and so need the image's own Python.
-HEAVY = {"register", "round", "train", "train_customer", "finetune", "visa_try", "seg_check"}
+HEAVY = {"register", "round", "train", "train_customer", "finetune", "visa_try", "seg_check", "line_check"}
 STAGES = ("template", "preflight", "status") + tuple(sorted(HEAVY))
 
 IMAGE = os.environ.get("DEFT_IMAGE", "nvcr.io/nvidia/paidf-anomalygen:1.0.1")
@@ -260,7 +260,7 @@ def read_status(target=60):
 # --------------------------------------------------------------------------
 # the gate
 # --------------------------------------------------------------------------
-GATED_STAGES = {"round", "train", "train_customer", "finetune", "visa_try", "seg_check"}
+GATED_STAGES = {"round", "train", "train_customer", "finetune", "visa_try", "seg_check", "line_check"}
 PREFLIGHT_HOURS = 24
 
 
@@ -568,6 +568,15 @@ def stage_seg_check(args):
         dataset_name=UC, n=int(args.get("n", 48)), seed=int(args.get("seed", 0)),
         folds=int(args.get("folds", 4)), repeats=int(args.get("repeats", 3)),
         steps=int(args.get("steps", 300)))
+
+
+def stage_line_check(args):
+    """Experiment: replay a production line and score the inspector each round."""
+    import line_check
+    return line_check.line_check(
+        seed=int(args.get("seed", 0)), repeats=int(args.get("repeats", 2)),
+        rounds=int(args.get("rounds", 6)), start=int(args.get("start", 40)),
+        steps=int(args.get("steps", 150)), hf_model=args.get("model") or "microsoft/resnet-18")
 
 
 def stage_finetune(args):
