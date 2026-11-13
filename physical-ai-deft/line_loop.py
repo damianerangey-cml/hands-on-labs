@@ -36,6 +36,8 @@ from line_check import BOARDS, SIZE, load_visa
 
 DATASET = os.environ.get("DEFT_LINE_DATASET", "PCB Line Inspection")
 MODEL_TAG = "line-inspector"
+# The theme, on every dataset, model and task the loop makes.
+THEME_TAGS = ["physical-ai", "agentic-loop", "loop-training"]
 BASE_MODEL = "microsoft/resnet-18"
 
 
@@ -140,7 +142,7 @@ def line_arrive(arrive=300, review=60, start=40, seed=0, dataset=DATASET):
     import hyperdataset as hd
 
     task = bind_task()
-    ds_id = hd.get_or_create_dataset(dataset, tags=["physical-ai", "pcb", "line"])
+    ds_id = hd.get_or_create_dataset(dataset, tags=THEME_TAGS + ["pcb", "line"])
     version, frames, cursor, kept_seed = _state(ds_id)
     seed = int(kept_seed) if kept_seed is not None else int(seed)
     items, y, exam, line = _world(seed)
@@ -352,7 +354,8 @@ def line_train(steps=150, lr=1e-4, dataset=DATASET):
         logger = task.get_logger()
         for k, v in after.items():
             logger.report_single_value(k.replace("_", " "), v)
-        om = OutputModel(task=task, name=name, framework="PyTorch", tags=[MODEL_TAG])
+        om = OutputModel(task=task, name=name, framework="PyTorch",
+                         tags=[MODEL_TAG] + THEME_TAGS + [version.get("name")])
         om.update_design(config_dict=result)
         om.update_weights(weights_filename=weights, auto_delete_file=False,
                           upload_uri=Session.get_files_server_host())

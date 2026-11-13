@@ -637,6 +637,14 @@ def finish(args, result):
         if task:
             first = " ".join("%s=%s" % kv for kv in args.items())
             task.set_comment(first + "\n" + line[:6000])
+            stage = args.get("stage", "")
+            if stage.startswith("line_"):
+                tags = ["physical-ai", "agentic-loop", "loop-training",
+                        {"line_arrive": "boards-arrive", "line_train": "train-inspector"}
+                        .get(stage, stage)]
+                if isinstance(result, dict) and result.get("version"):
+                    tags.append(str(result["version"]))
+                task.add_tags(tags)
 
 
 def main():
