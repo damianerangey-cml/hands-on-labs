@@ -26,12 +26,11 @@ named `Build the stage template` with
 and enqueue it on the CPU queue. Its result has a field `clone_this`: the id of
 the template, a different task from the one you just ran.
 
-**Two tasks now exist, and only one is the template.** The task you ran is the
-builder: it is completed and uses a plain Python image. The template is the
-draft whose id is in `clone_this`, and it carries NVIDIA's container image.
-Every stage is cloned from the template. A stage cloned from the builder fails
-preflight with "not running in NVIDIA's AnomalyGen image": if you see that,
-you cloned the wrong task, and the fix is to clone `clone_this` instead.
+**Clone the task whose id is in `clone_this`.** That is the template: a draft
+that carries NVIDIA's container image. If a stage ever fails preflight with
+"not running in NVIDIA's AnomalyGen image", it was cloned from something that
+is not the template: clone `clone_this` and run it again. That one retry is
+allowed; it is a mistake in cloning, not a problem with the queue.
 
 **Every stage after that is the same three calls:**
 

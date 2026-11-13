@@ -315,8 +315,14 @@ def stage_template(args):
     always set (see TEMPLATE_ARGS). This stage writes them once, onto a draft
     task; cloning that draft copies them, so every stage after this one is
     clone, set the comment, enqueue. It needs no GPU and not NVIDIA's image.
+
+    The task that RUNS this stage is easy to mistake for the template: it sits
+    beside it and was made a minute earlier. So before it ends it is given the
+    template's own container and script settings. A stage cloned from either
+    task then runs in NVIDIA's image.
     """
     from clearml import Task
+    from clearml.backend_api import Session
     from ag_common import bind_task
     task = bind_task()
     script = getattr(getattr(task, "data", None), "script", None) if task else None
@@ -326,27 +332,33 @@ def stage_template(args):
     if not (project and repo and branch):
         raise SystemExit("template needs project=, repo= and branch= when it "
                          "is not run as a task")
-    # The task that BUILDS the template must not share the template's name, or
-    # the next step clones the builder (a plain Python image) by mistake.
     if task and task.name == TEMPLATE_NAME:
-        task.set_name("Built the stage template (do not clone)")
-    for old in Task.get_tasks(project_name=project, task_name="^%s$"
-                              % TEMPLATE_NAME.replace("(", r"\(").replace(")", r"\)"),
-                              task_filter={"status": ["created"],
-                                           "system_tags": ["-archived"]}):
-        return {"template": old.id, "name": TEMPLATE_NAME, "reused": True,
-                "clone_this": old.id}
-    t = Task.create(project_name=project, task_name=TEMPLATE_NAME,
-                    task_type=Task.TaskTypes.data_processing,
-                    repo=repo, branch=branch,
-                    script="physical-ai-deft/run.py", working_directory=".",
-                    docker=IMAGE, docker_args=TEMPLATE_ARGS)
-    t.set_comment("Do not enqueue this task. Clone it, set the clone's comment "
-                  "to the stage arguments, and enqueue the clone.")
-    return {"template": t.id, "name": TEMPLATE_NAME, "reused": False,
-            "repo": repo, "branch": branch, "clone_this": t.id,
-            "note": "clone the task whose id is in clone_this, not the task "
-                    "that produced this result"}
+        task.set_name("Built the stage template")
+    found = Task.get_tasks(project_name=project, task_name="^%s$"
+                           % TEMPLATE_NAME.replace("(", r"\(").replace(")", r"\)"),
+                           task_filter={"status": ["created"],
+                                        "system_tags": ["-archived"]})
+    if found:
+        t, reused = found[0], True
+    else:
+        t, reused = Task.create(project_name=project, task_name=TEMPLATE_NAME,
+                                task_type=Task.TaskTypes.data_processing,
+                                repo=repo, branch=branch,
+                                script="physical-ai-deft/run.py", working_directory=".",
+                                docker=IMAGE, docker_args=TEMPLATE_ARGS), False
+        t.set_comment("Do not enqueue this task. Clone it, set the clone's comment "
+                      "to the stage arguments, and enqueue the clone.")
+    result = {"template": t.id, "clone_this": t.id, "name": TEMPLATE_NAME,
+              "reused": reused, "repo": repo, "branch": branch}
+    if task:
+        send = Session().send_request
+        tpl = send(service="tasks", action="get_by_id", json={"task": t.id},
+                   method="post").json()["data"]["task"]
+        res = send(service="tasks", action="edit", method="post",
+                   json={"task": task.id, "force": True,
+                         "container": tpl["container"], "script": tpl["script"]})
+        result["this_task_also_clonable"] = res.status_code == 200
+    return result
 
 
 def stage_preflight(args):
