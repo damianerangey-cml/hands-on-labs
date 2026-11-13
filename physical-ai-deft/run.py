@@ -326,11 +326,16 @@ def stage_template(args):
     if not (project and repo and branch):
         raise SystemExit("template needs project=, repo= and branch= when it "
                          "is not run as a task")
+    # The task that BUILDS the template must not share the template's name, or
+    # the next step clones the builder (a plain Python image) by mistake.
+    if task and task.name == TEMPLATE_NAME:
+        task.set_name("Built the stage template (do not clone)")
     for old in Task.get_tasks(project_name=project, task_name="^%s$"
                               % TEMPLATE_NAME.replace("(", r"\(").replace(")", r"\)"),
                               task_filter={"status": ["created"],
                                            "system_tags": ["-archived"]}):
-        return {"template": old.id, "name": TEMPLATE_NAME, "reused": True}
+        return {"template": old.id, "name": TEMPLATE_NAME, "reused": True,
+                "clone_this": old.id}
     t = Task.create(project_name=project, task_name=TEMPLATE_NAME,
                     task_type=Task.TaskTypes.data_processing,
                     repo=repo, branch=branch,
@@ -339,7 +344,9 @@ def stage_template(args):
     t.set_comment("Do not enqueue this task. Clone it, set the clone's comment "
                   "to the stage arguments, and enqueue the clone.")
     return {"template": t.id, "name": TEMPLATE_NAME, "reused": False,
-            "repo": repo, "branch": branch}
+            "repo": repo, "branch": branch, "clone_this": t.id,
+            "note": "clone the task whose id is in clone_this, not the task "
+                    "that produced this result"}
 
 
 def stage_preflight(args):
