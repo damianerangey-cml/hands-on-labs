@@ -45,7 +45,7 @@ to six minutes. Act as soon as it is `completed` or `failed`.
 
 | Comment | What it does |
 |---|---|
-| `stage=preflight` | Checks the GPU queue can run the stages. Fails with the reasons if not. |
+| `stage=preflight` | Checks the GPU queue can run the stages. Fails with the reasons if not. It is shared with another loop, so two of its notes do not apply here and can be ignored: the missing `PCB Inspection` dataset, and the checkpoint cache. |
 | `stage=line_arrive` | The next batch of boards comes off the line and is published as the next version of the dataset `PCB Line Inspection`. The first call is day one: 40 boards, all labelled. Every later call shows 300 new boards to the current inspector and sends the 60 it is least sure about for review. |
 | `stage=line_train` | Fine-tunes the inspector on the latest version, scores it on the exam, and registers it as a model named after the version. |
 
